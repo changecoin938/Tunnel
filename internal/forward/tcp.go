@@ -3,8 +3,8 @@ package forward
 import (
 	"context"
 	"net"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
-	"paqet/internal/pkg/buffer"
 )
 
 func (f *Forward) listenTCP(ctx context.Context) error {
@@ -57,11 +57,11 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 
 	errCh := make(chan error, 2)
 	go func() {
-		err := buffer.CopyT(conn, strm)
+		err := diag.CopyTCPDown(conn, strm)
 		errCh <- err
 	}()
 	go func() {
-		err := buffer.CopyT(strm, conn)
+		err := diag.CopyTCPUp(strm, conn)
 		errCh <- err
 	}()
 

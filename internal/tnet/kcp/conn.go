@@ -41,6 +41,8 @@ func (c *Conn) Ping(wait bool) error {
 	}
 	defer strm.Close()
 	if wait {
+		_ = strm.SetDeadline(time.Now().Add(5 * time.Second))
+		defer strm.SetDeadline(time.Time{})
 		p := protocol.Proto{Type: protocol.PPING}
 		err = p.Write(strm)
 		if err != nil {

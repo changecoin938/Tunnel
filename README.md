@@ -314,6 +314,16 @@ To profile CPU/memory under real traffic, you can enable Go `pprof`:
 
 Then open `http://127.0.0.1:6060/debug/pprof/` (bind carefully).
 
+For a quick tunnel/traffic view (served on the same local debug listener):
+
+- `http://127.0.0.1:6060/debug/paqet/text` (human-readable)
+- `http://127.0.0.1:6060/debug/paqet/status` (JSON)
+
+If you installed via `paqet-ui`, use:
+
+- **Tunnel status (detailed)**
+- **Traffic rate (1s sample)**
+
 # Architecture & Security Model
 
 ### The `pcap` Approach and Firewall Bypass

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"paqet/internal/tnet"
@@ -68,6 +69,7 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn) error 
 		f.client.CloseUDP(k)
 		return err
 	}
+	diag.AddUDPUp(int64(n))
 	if new {
 		flog.Infof("accepted UDP connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
 		go f.handleUDPStrm(ctx, k, strm, conn, caddr)
@@ -108,5 +110,8 @@ func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) e
 	}
 
 	_, err = src.WriteToUDP(buf[:n], addr)
+	if err == nil {
+		diag.AddUDPDown(int64(n))
+	}
 	return err
 }

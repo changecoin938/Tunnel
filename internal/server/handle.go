@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
@@ -47,8 +48,10 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 				continue
 			}
 		}
+		diag.IncStreams()
 		s.wg.Go(func() {
 			defer func() {
+				diag.DecStreams()
 				if s.streamSem != nil {
 					<-s.streamSem
 				}

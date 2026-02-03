@@ -3,8 +3,8 @@ package server
 import (
 	"context"
 	"net"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
-	"paqet/internal/pkg/buffer"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 )
@@ -28,11 +28,11 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 
 	errChan := make(chan error, 2)
 	go func() {
-		err := buffer.CopyU(conn, strm)
+		err := diag.CopyUDPUp(conn, strm)
 		errChan <- err
 	}()
 	go func() {
-		err := buffer.CopyU(strm, conn)
+		err := diag.CopyUDPDown(strm, conn)
 		errChan <- err
 	}()
 

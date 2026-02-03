@@ -3,6 +3,7 @@ package socks
 import (
 	"io"
 	"net"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"time"
@@ -27,6 +28,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 		h.client.CloseUDP(k)
 		return err
 	}
+	diag.AddUDPUp(int64(len(d.Data)))
 
 	if new {
 		flog.Infof("SOCKS5 accepted UDP connection %s -> %s", addr, d.Address())
@@ -53,6 +55,7 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", len(dd.Bytes()), addr, err)
 						return
 					}
+					diag.AddUDPDown(int64(n))
 				}
 			}
 		}()

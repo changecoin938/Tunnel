@@ -2,20 +2,29 @@ package client
 
 import (
 	"context"
+	"paqet/internal/diag"
 	"time"
 )
 
 func (c *Client) ticker(ctx context.Context) {
-	timer := time.NewTimer(0)
-	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 
+	i := 0
 	for {
 		select {
-		case <-timer.C:
-			// for _, tc := range c.iter.Items {
-			// 	tc.sendTCPF(tc.conn)
-			// }
-			// timer.Reset(8 * time.Second)
+		case <-ticker.C:
+			if len(c.iter.Items) == 0 {
+				continue
+			}
+			tc := c.iter.Items[i%len(c.iter.Items)]
+			i++
+			if tc == nil || tc.conn == nil {
+				continue
+			}
+			start := time.Now()
+			err := tc.conn.Ping(true)
+			diag.SetPing(time.Since(start), err)
 		case <-ctx.Done():
 			return
 		}

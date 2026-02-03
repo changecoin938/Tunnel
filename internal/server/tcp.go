@@ -3,8 +3,8 @@ package server
 import (
 	"context"
 	"net"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
-	"paqet/internal/pkg/buffer"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 	"time"
@@ -30,11 +30,11 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 
 	errChan := make(chan error, 2)
 	go func() {
-		err := buffer.CopyT(conn, strm)
+		err := diag.CopyTCPUp(conn, strm)
 		errChan <- err
 	}()
 	go func() {
-		err := buffer.CopyT(strm, conn)
+		err := diag.CopyTCPDown(strm, conn)
 		errChan <- err
 	}()
 

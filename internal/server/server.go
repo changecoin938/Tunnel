@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"paqet/internal/conf"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
@@ -20,10 +21,10 @@ type Server struct {
 	pConn *socket.PacketConn
 	wg    sync.WaitGroup
 
-	sessSem             chan struct{}
-	streamSem           chan struct{}
+	sessSem              chan struct{}
+	streamSem            chan struct{}
 	maxStreamsPerSession int
-	headerTimeout       time.Duration
+	headerTimeout        time.Duration
 }
 
 func New(cfg *conf.Conf) (*Server, error) {
@@ -109,10 +110,12 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 				continue
 			}
 		}
+		diag.IncSessions()
 		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), conn.LocalAddr())
 
 		s.wg.Go(func() {
 			defer func() {
+				diag.DecSessions()
 				if s.sessSem != nil {
 					<-s.sessSem
 				}

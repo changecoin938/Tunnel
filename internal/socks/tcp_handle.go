@@ -2,8 +2,8 @@ package socks
 
 import (
 	"net"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
-	"paqet/internal/pkg/buffer"
 
 	"github.com/txthinking/socks5"
 )
@@ -60,11 +60,11 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 
 	errCh := make(chan error, 2)
 	go func() {
-		err := buffer.CopyT(conn, strm)
+		err := diag.CopyTCPUp(strm, conn)
 		errCh <- err
 	}()
 	go func() {
-		err := buffer.CopyT(strm, conn)
+		err := diag.CopyTCPDown(conn, strm)
 		errCh <- err
 	}()
 

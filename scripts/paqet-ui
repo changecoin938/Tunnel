@@ -169,6 +169,62 @@ logs_screen() {
   whiptail --title "${APP} logs (last 200)" --scrolltext --textbox <(printf "%s\n" "${out}") 22 78
 }
 
+get_pprof_addr_from_config() {
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    local a
+    a="$(grep -E '^[[:space:]]*pprof:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*pprof:[[:space:]]*\"?([^\"[:space:]]+)\"?.*$/\\1/')"
+    if [[ -n "${a}" ]]; then
+      printf "%s" "${a}"
+      return 0
+    fi
+  fi
+  printf "%s" "127.0.0.1:6060"
+}
+
+diag_text_fetch() {
+  local addr
+  addr="$(get_pprof_addr_from_config)"
+  curl -fsS "http://${addr}/debug/paqet/text" 2>&1
+}
+
+diag_text_screen() {
+  local out
+  out="$(diag_text_fetch || true)"
+  if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404'; then
+    out="${out}\n\nNOTE: detailed tunnel status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
+  fi
+  whiptail --title "${APP} tunnel status (detailed)" --scrolltext --textbox <(printf "%b\n" "${out}") 22 78
+}
+
+extract_bytes_line() {
+  # input: diag text
+  # output: "up down" or empty
+  sed -nE 's/^  bytes: up=([0-9]+)  down=([0-9]+)$/\\1 \\2/p' | head -n1
+}
+
+throughput_screen() {
+  local a b up1 down1 up2 down2 d_up d_down out
+  a="$(diag_text_fetch || true)"
+  if [[ -z "${a}" ]]; then
+    msg "Could not fetch diagnostics. Is paqet running and debug.pprof enabled?"
+    return 0
+  fi
+  read -r up1 down1 < <(printf "%s\n" "${a}" | extract_bytes_line || true)
+  sleep 1
+  b="$(diag_text_fetch || true)"
+  read -r up2 down2 < <(printf "%s\n" "${b}" | extract_bytes_line || true)
+
+  if [[ -z "${up1:-}" || -z "${down1:-}" || -z "${up2:-}" || -z "${down2:-}" ]]; then
+    msg "Failed to parse counters. (Try Detailed Status first.)"
+    return 0
+  fi
+
+  d_up=$((up2-up1))
+  d_down=$((down2-down1))
+  out="Estimated throughput (1s sample)\n\n  up:   ${d_up} B/s\n  down: ${d_down} B/s\n\n(Values are tunnel payload bytes since start; sample uses /debug/paqet/text)"
+  msg "${out}"
+}
+
 uninstall_all() {
   if ! yesno "${APP}" "این کار سرویس و فایل‌های paqet را پاک می‌کند. ادامه؟"; then
     return 0
@@ -368,6 +424,8 @@ main_loop() {
       "2" "ستاپ سرور داخل (Client + SOCKS5)" \
       "3" "Status" \
       "4" "Logs" \
+      "8" "Tunnel status (detailed)" \
+      "9" "Traffic rate (1s sample)" \
       "5" "Restart service" \
       "6" "Stop service" \
       "7" "Uninstall" \
@@ -378,6 +436,8 @@ main_loop() {
       2) setup_inside_server ;;
       3) status_screen ;;
       4) logs_screen ;;
+      8) diag_text_screen ;;
+      9) throughput_screen ;;
       5) systemctl restart "${SERVICE_NAME}" || msg "restart failed" ;;
       6) systemctl stop "${SERVICE_NAME}" || true ;;
       7) uninstall_all ;;
