@@ -64,6 +64,16 @@ ensure_deps() {
 
 msg() { whiptail --title "${APP}" --msgbox "$1" 12 78; }
 
+textbox() {
+  # Safer than process substitution; works reliably across environments.
+  local title="$1" height="${2:-22}" width="${3:-78}"
+  local tmp
+  tmp="$(mktemp)"
+  cat >"${tmp}"
+  whiptail --title "${title}" --scrolltext --textbox "${tmp}" "${height}" "${width}"
+  rm -f "${tmp}"
+}
+
 input() {
   local title="$1" prompt="$2" def="${3:-}"
   local out
@@ -299,14 +309,20 @@ start_service() {
 
 status_screen() {
   local out
-  out="$(systemctl status "${SERVICE_NAME}" --no-pager 2>&1 || true)"
-  whiptail --title "${APP} status" --scrolltext --textbox <(printf "%s\n" "${out}") 22 78
+  out="$(SYSTEMD_COLORS=0 systemctl status "${SERVICE_NAME}" --no-pager --full --plain 2>&1 || true)"
+  if [[ -z "${out}" ]]; then
+    out="(empty output)\n\nTry: systemctl status ${SERVICE_NAME}"
+  fi
+  printf "%b\n" "${out}" | textbox "${APP} status" 22 78
 }
 
 logs_screen() {
   local out
-  out="$(journalctl -u "${SERVICE_NAME}" -n 200 --no-pager 2>&1 || true)"
-  whiptail --title "${APP} logs (last 200)" --scrolltext --textbox <(printf "%s\n" "${out}") 22 78
+  out="$(journalctl -u "${SERVICE_NAME}" -n 200 --no-pager --output=short-iso 2>&1 || true)"
+  if [[ -z "${out}" ]]; then
+    out="(no logs)\n\nTry: journalctl -u ${SERVICE_NAME} -n 200 --no-pager"
+  fi
+  printf "%b\n" "${out}" | textbox "${APP} logs (last 200)" 22 78
 }
 
 get_pprof_addr_from_config() {
@@ -333,7 +349,7 @@ diag_text_screen() {
   if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404'; then
     out="${out}\n\nNOTE: detailed tunnel status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
   fi
-  whiptail --title "${APP} tunnel status (detailed)" --scrolltext --textbox <(printf "%b\n" "${out}") 22 78
+  printf "%b\n" "${out}" | textbox "${APP} tunnel status (detailed)" 22 78
 }
 
 diag_json_fetch() {
@@ -348,7 +364,7 @@ diag_json_screen() {
   if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404'; then
     out="${out}\n\nNOTE: JSON status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
   fi
-  whiptail --title "${APP} tunnel status (json)" --scrolltext --textbox <(printf "%b\n" "${out}") 22 78
+  printf "%b\n" "${out}" | textbox "${APP} tunnel status (json)" 22 78
 }
 
 get_role_from_config() {
@@ -451,7 +467,7 @@ socks_test_screen() {
   if echo "${out}" | grep -qiE 'failed|refused|timeout|could not|error'; then
     out="${out}\n\nTip: مطمئن شو SOCKS5 روی همین سرور بالا هست: ss -lntp | grep 1080"
   fi
-  whiptail --title "${APP} SOCKS5 test" --scrolltext --textbox <(printf "%b\n" "${out}") 18 78
+  printf "%b\n" "${out}" | textbox "${APP} SOCKS5 test" 18 78
 }
 
 extract_bytes_line() {
