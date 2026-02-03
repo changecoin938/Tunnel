@@ -31,6 +31,16 @@ var cfg atomic.Value // *ConfigInfo
 var sessions atomic.Int64
 var streams atomic.Int64
 
+var rawUpPackets atomic.Uint64
+var rawDownPackets atomic.Uint64
+var rawUpBytes atomic.Uint64
+var rawDownBytes atomic.Uint64
+var rawLastUpAt atomic.Int64   // unix nano
+var rawLastDownAt atomic.Int64 // unix nano
+
+var guardPass atomic.Uint64
+var guardDrops atomic.Uint64
+
 var tcpUpBytes atomic.Uint64
 var tcpDownBytes atomic.Uint64
 var udpUpBytes atomic.Uint64
@@ -54,6 +64,16 @@ type Status struct {
 
 	Sessions int64 `json:"sessions"`
 	Streams  int64 `json:"streams"`
+
+	RawUpPackets   uint64     `json:"raw_up_packets"`
+	RawDownPackets uint64     `json:"raw_down_packets"`
+	RawUpBytes     uint64     `json:"raw_up_bytes"`
+	RawDownBytes   uint64     `json:"raw_down_bytes"`
+	RawLastUpAt    *time.Time `json:"raw_last_up_at,omitempty"`
+	RawLastDownAt  *time.Time `json:"raw_last_down_at,omitempty"`
+
+	GuardPass  uint64 `json:"guard_pass"`
+	GuardDrops uint64 `json:"guard_drops"`
 
 	TCPUpBytes   uint64 `json:"tcp_up_bytes"`
 	TCPDownBytes uint64 `json:"tcp_down_bytes"`
@@ -79,6 +99,25 @@ func DecSessions() { sessions.Add(-1) }
 
 func IncStreams() { streams.Add(1) }
 func DecStreams() { streams.Add(-1) }
+
+func AddRawUp(n int) {
+	if n > 0 {
+		rawUpPackets.Add(1)
+		rawUpBytes.Add(uint64(n))
+		rawLastUpAt.Store(time.Now().UnixNano())
+	}
+}
+
+func AddRawDown(n int) {
+	if n > 0 {
+		rawDownPackets.Add(1)
+		rawDownBytes.Add(uint64(n))
+		rawLastDownAt.Store(time.Now().UnixNano())
+	}
+}
+
+func AddGuardPass() { guardPass.Add(1) }
+func AddGuardDrop() { guardDrops.Add(1) }
 
 func AddTCPUp(n int64) {
 	if n > 0 {
@@ -114,19 +153,25 @@ func SetPing(rtt time.Duration, err error) {
 
 func Snapshot() Status {
 	s := Status{
-		Now:          time.Now(),
-		Uptime:       time.Since(startTime).Truncate(time.Second).String(),
-		Version:      version.Version,
-		GitTag:       version.GitTag,
-		GitCommit:    version.GitCommit,
-		BuildTime:    version.BuildTime,
-		Sessions:     sessions.Load(),
-		Streams:      streams.Load(),
-		TCPUpBytes:   tcpUpBytes.Load(),
-		TCPDownBytes: tcpDownBytes.Load(),
-		UDPUpBytes:   udpUpBytes.Load(),
-		UDPDownBytes: udpDownBytes.Load(),
-		Goroutines:   runtime.NumGoroutine(),
+		Now:            time.Now(),
+		Uptime:         time.Since(startTime).Truncate(time.Second).String(),
+		Version:        version.Version,
+		GitTag:         version.GitTag,
+		GitCommit:      version.GitCommit,
+		BuildTime:      version.BuildTime,
+		Sessions:       sessions.Load(),
+		Streams:        streams.Load(),
+		RawUpPackets:   rawUpPackets.Load(),
+		RawDownPackets: rawDownPackets.Load(),
+		RawUpBytes:     rawUpBytes.Load(),
+		RawDownBytes:   rawDownBytes.Load(),
+		GuardPass:      guardPass.Load(),
+		GuardDrops:     guardDrops.Load(),
+		TCPUpBytes:     tcpUpBytes.Load(),
+		TCPDownBytes:   tcpDownBytes.Load(),
+		UDPUpBytes:     udpUpBytes.Load(),
+		UDPDownBytes:   udpDownBytes.Load(),
+		Goroutines:     runtime.NumGoroutine(),
 	}
 	if v := cfg.Load(); v != nil {
 		s.Config = *v.(*ConfigInfo)
@@ -143,6 +188,14 @@ func Snapshot() Status {
 		t := time.Unix(0, at)
 		s.PingLastAt = &t
 	}
+	if at := rawLastUpAt.Load(); at > 0 {
+		t := time.Unix(0, at)
+		s.RawLastUpAt = &t
+	}
+	if at := rawLastDownAt.Load(); at > 0 {
+		t := time.Unix(0, at)
+		s.RawLastDownAt = &t
+	}
 	if rtt := pingLastRTT.Load(); rtt > 0 {
 		s.PingLastRTT = (time.Duration(rtt)).Truncate(time.Millisecond).String()
 	}
@@ -157,6 +210,15 @@ func Snapshot() Status {
 func FormatText(s Status) string {
 	totalUp := s.TCPUpBytes + s.UDPUpBytes
 	totalDown := s.TCPDownBytes + s.UDPDownBytes
+
+	rawLastUp := "n/a"
+	if s.RawLastUpAt != nil {
+		rawLastUp = s.RawLastUpAt.Format(time.RFC3339)
+	}
+	rawLastDown := "n/a"
+	if s.RawLastDownAt != nil {
+		rawLastDown = s.RawLastDownAt.Format(time.RFC3339)
+	}
 
 	pingLine := "ping: n/a"
 	if s.PingLastAt != nil || s.PingLastRTT != "" || s.PingLastErr != "" {
@@ -174,6 +236,9 @@ func FormatText(s Status) string {
 			"  version: %s (tag=%s commit=%s)\n"+
 			"  streams: %d  sessions: %d\n"+
 			"  bytes: up=%d  down=%d\n"+
+			"    raw: packets up=%d  down=%d\n"+
+			"    raw: bytes   up=%d  down=%d  last_up=%s  last_down=%s\n"+
+			"    guard: pass=%d  drops=%d\n"+
 			"    tcp: up=%d  down=%d\n"+
 			"    udp: up=%d  down=%d\n"+
 			"  %s\n"+
@@ -184,6 +249,9 @@ func FormatText(s Status) string {
 		s.Version, s.GitTag, s.GitCommit,
 		s.Streams, s.Sessions,
 		totalUp, totalDown,
+		s.RawUpPackets, s.RawDownPackets,
+		s.RawUpBytes, s.RawDownBytes, rawLastUp, rawLastDown,
+		s.GuardPass, s.GuardDrops,
 		s.TCPUpBytes, s.TCPDownBytes,
 		s.UDPUpBytes, s.UDPDownBytes,
 		pingLine,

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"net"
 	"paqet/internal/conf"
+	"paqet/internal/diag"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -76,10 +77,12 @@ func (g *GuardConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 			return 0, nil, err
 		}
 		if n < guardHeaderLen {
+			diag.AddGuardDrop()
 			// Drop undersized packet.
 			continue
 		}
 		if !hmac.Equal(p[0:4], g.magic[:]) {
+			diag.AddGuardDrop()
 			continue
 		}
 
@@ -92,11 +95,13 @@ func (g *GuardConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 			}
 		}
 		if !ok {
+			diag.AddGuardDrop()
 			continue
 		}
 
 		// Strip the guard header in-place.
 		copy(p, p[guardHeaderLen:n])
+		diag.AddGuardPass()
 		return n - guardHeaderLen, addr, nil
 	}
 }
@@ -157,4 +162,3 @@ func (g *GuardConn) cookie(win uint64) [8]byte {
 	copy(out[:], sum[:8])
 	return out
 }
-

@@ -25,7 +25,7 @@ need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 ensure_deps() {
   local missing=()
-  for c in whiptail ip iptables systemctl awk sed grep cut tr head tail; do
+  for c in whiptail ip iptables systemctl awk sed grep cut tr head tail curl; do
     need_cmd "$c" || missing+=("$c")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
@@ -184,7 +184,7 @@ get_pprof_addr_from_config() {
 diag_text_fetch() {
   local addr
   addr="$(get_pprof_addr_from_config)"
-  curl -fsS "http://${addr}/debug/paqet/text" 2>&1
+  curl -fsS --max-time 2 "http://${addr}/debug/paqet/text" 2>&1
 }
 
 diag_text_screen() {
@@ -194,6 +194,56 @@ diag_text_screen() {
     out="${out}\n\nNOTE: detailed tunnel status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
   fi
   whiptail --title "${APP} tunnel status (detailed)" --scrolltext --textbox <(printf "%b\n" "${out}") 22 78
+}
+
+diag_json_fetch() {
+  local addr
+  addr="$(get_pprof_addr_from_config)"
+  curl -fsS --max-time 2 "http://${addr}/debug/paqet/status" 2>&1
+}
+
+diag_json_screen() {
+  local out
+  out="$(diag_json_fetch || true)"
+  if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404'; then
+    out="${out}\n\nNOTE: JSON status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
+  fi
+  whiptail --title "${APP} tunnel status (json)" --scrolltext --textbox <(printf "%b\n" "${out}") 22 78
+}
+
+get_role_from_config() {
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    grep -E '^[[:space:]]*role:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*role:[[:space:]]*\"?([^\"[:space:]]+)\"?.*$/\\1/'
+  fi
+}
+
+get_socks_listen_from_config() {
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    grep -E '^[[:space:]]*listen:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*listen:[[:space:]]*\"?([^\"[:space:]]+)\"?.*$/\\1/'
+  fi
+}
+
+socks_test_screen() {
+  local role socks out
+  role="$(get_role_from_config || true)"
+  if [[ "${role}" != "client" ]]; then
+    msg "این گزینه فقط برای سرور داخل (client) است."
+    return 0
+  fi
+  socks="$(get_socks_listen_from_config || true)"
+  if [[ -z "${socks}" ]]; then
+    socks="127.0.0.1:1080"
+  fi
+
+  out="$(curl -fsS -o /dev/null --max-time 15 \
+    --proxy "socks5h://${socks}" \
+    -w "proxy=${socks}\nhttp_code=%{http_code}\ntime_total=%{time_total}s\n" \
+    https://www.gstatic.com/generate_204 2>&1 || true)"
+
+  if echo "${out}" | grep -qiE 'failed|refused|timeout|could not|error'; then
+    out="${out}\n\nTip: مطمئن شو SOCKS5 روی همین سرور بالا هست: ss -lntp | grep 1080"
+  fi
+  whiptail --title "${APP} SOCKS5 test" --scrolltext --textbox <(printf "%b\n" "${out}") 18 78
 }
 
 extract_bytes_line() {
@@ -426,6 +476,8 @@ main_loop() {
       "4" "Logs" \
       "8" "Tunnel status (detailed)" \
       "9" "Traffic rate (1s sample)" \
+      "10" "Tunnel status (json)" \
+      "11" "SOCKS5 test (client)" \
       "5" "Restart service" \
       "6" "Stop service" \
       "7" "Uninstall" \
@@ -438,6 +490,8 @@ main_loop() {
       4) logs_screen ;;
       8) diag_text_screen ;;
       9) throughput_screen ;;
+      10) diag_json_screen ;;
+      11) socks_test_screen ;;
       5) systemctl restart "${SERVICE_NAME}" || msg "restart failed" ;;
       6) systemctl stop "${SERVICE_NAME}" || true ;;
       7) uninstall_all ;;

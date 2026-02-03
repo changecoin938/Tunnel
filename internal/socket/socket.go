@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"paqet/internal/conf"
+	"paqet/internal/diag"
 	"sync/atomic"
 	"time"
 )
@@ -72,6 +73,7 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		return 0, nil, err
 	}
 	n = copy(data, payload)
+	diag.AddRawDown(n)
 
 	return n, addr, nil
 }
@@ -103,6 +105,7 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		return 0, err
 	}
 
+	diag.AddRawUp(len(data))
 	return len(data), nil
 }
 
