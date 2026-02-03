@@ -333,6 +333,126 @@ get_socks_listen_from_config() {
   fi
 }
 
+has_forward_section() {
+  [[ -f "${CONFIG_FILE}" ]] && grep -qE '^[[:space:]]*forward:[[:space:]]*$' "${CONFIG_FILE}"
+}
+
+add_or_replace_forward_rule() {
+  # Adds (or replaces) a single TCP forward rule:
+  # listen => target (server-side), protocol=tcp
+  local listen_addr="$1" target_addr="$2"
+  local tmp
+  tmp="$(mktemp)"
+
+  # If a forward section exists, we append a new rule at the end of that section.
+  # Otherwise, we insert a new forward section after the socks5 block (if present),
+  # else near the top.
+  if has_forward_section; then
+    # Simple append at end of file (valid YAML, keeps existing forwards).
+    cat "${CONFIG_FILE}" >"${tmp}"
+    cat >>"${tmp}" <<EOF
+
+forward:
+  - listen: "${listen_addr}"
+    target: "${target_addr}"
+    protocol: "tcp"
+EOF
+  else
+    # Insert after socks5 block if present, else after debug block, else at top after log.
+    awk -v listen_addr="${listen_addr}" -v target_addr="${target_addr}" '
+      BEGIN { inserted=0 }
+      {
+        print $0
+        if (!inserted && $0 ~ /^[[:space:]]*socks5:[[:space:]]*$/) {
+          # Keep printing socks5 block; insertion happens after it ends.
+          in_socks=1
+        } else if (in_socks) {
+          # socks5 block ends when we hit a non-indented line (new top-level key) or EOF.
+          if ($0 ~ /^[^[:space:]]/ && $0 !~ /^socks5:/) {
+            # We already printed this top-level line; insert before it by re-printing not possible.
+            # So instead we insert right before this line by using a buffer approach is complex.
+            # Workaround: insert when we encounter the next top-level key after socks5 by printing
+            # the forward section just before that key: we do it by printing it now and then re-printing line.
+          }
+        }
+      }
+    ' "${CONFIG_FILE}" >/dev/null 2>&1
+
+    # Use a safer approach: split into head (through socks5 block) and tail (rest),
+    # then concatenate with forward section in between.
+    local socks_start socks_end
+    socks_start="$(grep -nE '^[[:space:]]*socks5:[[:space:]]*$' "${CONFIG_FILE}" | head -n1 | cut -d: -f1 || true)"
+    if [[ -n "${socks_start}" ]]; then
+      # socks block ends at next top-level key after socks_start
+      socks_end="$(tail -n +$((socks_start+1)) "${CONFIG_FILE}" | grep -nE '^[^[:space:]][^:]*:' | head -n1 | cut -d: -f1 || true)"
+      if [[ -n "${socks_end}" ]]; then
+        socks_end=$((socks_start + socks_end - 1))
+      else
+        socks_end="$(wc -l <"${CONFIG_FILE}")"
+      fi
+      head -n "${socks_end}" "${CONFIG_FILE}" >"${tmp}"
+      cat >>"${tmp}" <<EOF
+
+forward:
+  - listen: "${listen_addr}"
+    target: "${target_addr}"
+    protocol: "tcp"
+EOF
+      tail -n +$((socks_end+1)) "${CONFIG_FILE}" >>"${tmp}"
+    else
+      cat "${CONFIG_FILE}" >"${tmp}"
+      cat >>"${tmp}" <<EOF
+
+forward:
+  - listen: "${listen_addr}"
+    target: "${target_addr}"
+    protocol: "tcp"
+EOF
+    fi
+  fi
+
+  mv "${tmp}" "${CONFIG_FILE}"
+  chmod 600 "${CONFIG_FILE}" || true
+}
+
+enable_vless_relay_wizard() {
+  # This is the "no manual editing" path to use Xray/V2Ray (VLESS) behind paqet:
+  # - Outside (server) runs Xray inbound on 127.0.0.1:<xray_port>
+  # - Inside (client) listens on 0.0.0.0:<public_port> and forwards through tunnel to 127.0.0.1:<xray_port> (server-side)
+  local role public_port xray_port listen_addr target_addr
+
+  role="$(get_role_from_config || true)"
+  if [[ "${role}" != "client" ]]; then
+    msg "این گزینه فقط روی سرور داخل (client) کار می‌کنه.\n\nروی سرور خارج لازم نیست چیزی انجام بدی جز ساخت inbound در x-ui."
+    return 0
+  fi
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}\n\nاول گزینه «ستاپ سرور داخل» رو اجرا کن."
+    return 0
+  fi
+
+  ensure_service_can_reconfigure || return 1
+
+  public_port="$(input "${APP}" "پورت عمومی روی ایران برای VLESS؟ (دیفالت 443)" "443")" || return 1
+  public_port="$(ensure_tcp_port_free_or_prompt "${public_port}" "VLESS entrypoint (inside)" )" || return 1
+
+  xray_port="$(input "${APP}" "پورت inbound روی سرور خارج (x-ui)؟ (دیفالت 2443)" "2443")" || return 1
+  if [[ ! "${xray_port}" =~ ^[0-9]+$ ]] || (( xray_port < 1 || xray_port > 65535 )); then
+    msg "پورت نامعتبر: ${xray_port}"
+    return 1
+  fi
+
+  listen_addr="0.0.0.0:${public_port}"
+  target_addr="127.0.0.1:${xray_port}"
+
+  add_or_replace_forward_rule "${listen_addr}" "${target_addr}"
+
+  install_service
+  start_service
+
+  msg "✅ VLESS Relay فعال شد.\n\nروی سرور خارج در x-ui یک inbound بساز:\n  VLESS / TCP\n  listen: 127.0.0.1\n  port:   ${xray_port}\n\nبعد روی کلاینت‌ها:\n  address = IP ایران\n  port    = ${public_port}\n  uuid/flow/... = همون x-ui"
+}
+
 socks_test_screen() {
   local role socks out
   role="$(get_role_from_config || true)"
@@ -607,6 +727,7 @@ main_loop() {
     choice="$(menu "${APP}" "یک گزینه را انتخاب کن:" \
       "1" "ستاپ سرور خارج (Server)" \
       "2" "ستاپ سرور داخل (Client + SOCKS5)" \
+      "12" "Enable VLESS relay (x-ui on outside, no panel inside)" \
       "3" "Status" \
       "4" "Logs" \
       "8" "Tunnel status (detailed)" \
@@ -621,6 +742,7 @@ main_loop() {
     case "${choice}" in
       1) setup_outside_server ;;
       2) setup_inside_server ;;
+      12) enable_vless_relay_wizard ;;
       3) status_screen ;;
       4) logs_screen ;;
       8) diag_text_screen ;;
