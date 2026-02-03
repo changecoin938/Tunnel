@@ -39,6 +39,7 @@ apt-get install -y --no-install-recommends \
   ca-certificates curl tar \
   iproute2 iptables \
   whiptail \
+  ncurses-bin ncurses-term \
   libpcap0.8 \
   procps \
   systemd

@@ -11,6 +11,19 @@ if [[ ! -t 0 || ! -t 1 || ! -t 2 ]]; then
   fi
 fi
 
+# Fix for unknown TERM values (wezterm/xterm-kitty/etc.) when terminfo isn't installed.
+# If termcap init fails, fall back to a widely-supported TERM.
+if command -v tput >/dev/null 2>&1; then
+  if ! tput sgr0 >/dev/null 2>&1; then
+    export TERM=xterm-256color
+    tput sgr0 >/dev/null 2>&1 || export TERM=xterm
+  fi
+fi
+
+# Make sure the terminal isn't stuck in a weird mode (can break arrow keys).
+stty sane >/dev/null 2>&1 || true
+trap 'stty sane >/dev/null 2>&1 || true' EXIT
+
 APP="paqet"
 BIN="/usr/local/bin/paqet"
 
