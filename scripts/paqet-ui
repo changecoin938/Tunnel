@@ -1,0 +1,393 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP="paqet"
+BIN="/usr/local/bin/paqet"
+
+CONFIG_DIR="/etc/paqet"
+CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+
+LIB_DIR="/usr/local/lib/paqet"
+IPTABLES_SH="${LIB_DIR}/paqet-iptables.sh"
+
+SERVICE_NAME="paqet"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+SYSCTL_CONF="/etc/sysctl.d/99-paqet.conf"
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    exec sudo -E "$0" "$@"
+  fi
+}
+
+need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+ensure_deps() {
+  local missing=()
+  for c in whiptail ip iptables systemctl awk sed grep cut tr head tail; do
+    need_cmd "$c" || missing+=("$c")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Missing deps: ${missing[*]}" >&2
+    echo "Run: sudo apt-get update && sudo apt-get install -y whiptail iproute2 iptables" >&2
+    exit 1
+  fi
+  if [[ ! -x "${BIN}" ]]; then
+    echo "Binary not found at ${BIN}. Run install.sh first." >&2
+    exit 1
+  fi
+}
+
+msg() { whiptail --title "${APP}" --msgbox "$1" 12 78; }
+
+input() {
+  local title="$1" prompt="$2" def="${3:-}"
+  local out
+  out="$(whiptail --title "${title}" --inputbox "${prompt}" 12 78 "${def}" 3>&1 1>&2 2>&3)" || return 1
+  printf "%s" "${out}"
+}
+
+password() {
+  local title="$1" prompt="$2"
+  local out
+  out="$(whiptail --title "${title}" --passwordbox "${prompt}" 12 78 3>&1 1>&2 2>&3)" || return 1
+  printf "%s" "${out}"
+}
+
+yesno() {
+  local title="$1" prompt="$2"
+  if whiptail --title "${title}" --yesno "${prompt}" 12 78; then
+    return 0
+  fi
+  return 1
+}
+
+menu() {
+  local title="$1" prompt="$2"
+  shift 2
+  whiptail --title "${title}" --menu "${prompt}" 18 78 10 "$@" 3>&1 1>&2 2>&3
+}
+
+detect_default_iface() {
+  ip route show default 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}'
+}
+
+detect_local_ipv4() {
+  local iface="$1"
+  ip -4 -o addr show dev "${iface}" scope global 2>/dev/null | awk '{print $4}' | head -n1 | cut -d/ -f1
+}
+
+detect_gateway_ipv4() {
+  ip -4 route show default 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="via") {print $(i+1); exit}}'
+}
+
+detect_gateway_mac() {
+  local gw="$1" iface="$2"
+  ip neigh show "${gw}" dev "${iface}" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="lladdr") {print $(i+1); exit}}'
+}
+
+ensure_gateway_mac() {
+  local gw="$1" iface="$2"
+  local mac
+  mac="$(detect_gateway_mac "${gw}" "${iface}")"
+  if [[ -n "${mac}" ]]; then
+    printf "%s" "${mac}"
+    return 0
+  fi
+  ping -c 1 -W 1 "${gw}" >/dev/null 2>&1 || true
+  mac="$(detect_gateway_mac "${gw}" "${iface}")"
+  if [[ -n "${mac}" ]]; then
+    printf "%s" "${mac}"
+    return 0
+  fi
+  return 1
+}
+
+write_sysctl_defaults() {
+  cat >"${SYSCTL_CONF}" <<'EOF'
+# paqet baseline tuning (adjust per host/RAM/NIC)
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.core.rmem_default = 8388608
+net.core.wmem_default = 8388608
+net.core.netdev_max_backlog = 250000
+EOF
+  sysctl --system >/dev/null 2>&1 || true
+}
+
+install_service() {
+  mkdir -p "${CONFIG_DIR}" "${LIB_DIR}"
+
+  if [[ ! -x "${IPTABLES_SH}" ]]; then
+    msg "iptables helper not found at ${IPTABLES_SH}. Re-install scripts."
+    return 1
+  fi
+
+  cat >"${SERVICE_FILE}" <<EOF
+[Unit]
+Description=paqet tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash -lc 'port=\$(grep -E \"^\\s*addr:\\s*\\\"?:[0-9]+\\\"?\" -n ${CONFIG_FILE} | head -n1 | sed -E \"s/.*:([0-9]+)\\\"?\\s*$/\\1/\"); if [[ -n \"\$port\" ]]; then ${IPTABLES_SH} apply \"\$port\" || true; fi'
+ExecStart=${BIN} run -c ${CONFIG_FILE}
+ExecStopPost=/bin/bash -lc 'port=\$(grep -E \"^\\s*addr:\\s*\\\"?:[0-9]+\\\"?\" -n ${CONFIG_FILE} | head -n1 | sed -E \"s/.*:([0-9]+)\\\"?\\s*$/\\1/\"); if [[ -n \"\$port\" ]]; then ${IPTABLES_SH} remove \"\$port\" || true; fi'
+Restart=on-failure
+RestartSec=1
+LimitNOFILE=1048576
+
+# Hardening (keep compatible with raw sockets)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1 || true
+}
+
+start_service() {
+  systemctl restart "${SERVICE_NAME}"
+}
+
+status_screen() {
+  local out
+  out="$(systemctl status "${SERVICE_NAME}" --no-pager 2>&1 || true)"
+  whiptail --title "${APP} status" --scrolltext --textbox <(printf "%s\n" "${out}") 22 78
+}
+
+logs_screen() {
+  local out
+  out="$(journalctl -u "${SERVICE_NAME}" -n 200 --no-pager 2>&1 || true)"
+  whiptail --title "${APP} logs (last 200)" --scrolltext --textbox <(printf "%s\n" "${out}") 22 78
+}
+
+uninstall_all() {
+  if ! yesno "${APP}" "این کار سرویس و فایل‌های paqet را پاک می‌کند. ادامه؟"; then
+    return 0
+  fi
+  systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  systemctl disable "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  rm -f "${SERVICE_FILE}"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  rm -rf "${CONFIG_DIR}"
+  rm -f "${SYSCTL_CONF}"
+  msg "Uninstall completed. (Binary remains: ${BIN})"
+}
+
+gen_server_config() {
+  local iface="$1" ip="$2" router_mac="$3" port="$4" key="$5"
+  cat >"${CONFIG_FILE}" <<EOF
+role: "server"
+
+log:
+  level: "info"
+
+debug:
+  pprof: "127.0.0.1:6060"
+
+listen:
+  addr: ":${port}"
+
+network:
+  interface: "${iface}"
+  ipv4:
+    addr: "${ip}:${port}"
+    router_mac: "${router_mac}"
+  pcap:
+    sockbuf: 33554432
+
+transport:
+  protocol: "kcp"
+  conn: 1
+  kcp:
+    mode: "fast2"
+    mtu: 1350
+    rcvwnd: 8192
+    sndwnd: 8192
+    block: "aes"
+    key: "${key}"
+    guard: true
+    guard_magic: "PQT1"
+    guard_window: 30
+    guard_skew: 1
+    max_sessions: 2048
+    max_streams_total: 65536
+    max_streams_per_session: 8192
+    header_timeout: 10
+    smuxbuf: 16777216
+    streambuf: 4194304
+EOF
+}
+
+gen_client_config() {
+  local iface="$1" ip="$2" router_mac="$3" remote_ip="$4" port="$5" key="$6" socks_listen="$7" user="$8" pass="$9"
+  cat >"${CONFIG_FILE}" <<EOF
+role: "client"
+
+log:
+  level: "info"
+
+debug:
+  pprof: "127.0.0.1:6060"
+
+socks5:
+  - listen: "${socks_listen}"
+    username: "${user}"
+    password: "${pass}"
+
+network:
+  interface: "${iface}"
+  ipv4:
+    addr: "${ip}:0"
+    router_mac: "${router_mac}"
+  pcap:
+    sockbuf: 16777216
+
+server:
+  addr: "${remote_ip}:${port}"
+
+transport:
+  protocol: "kcp"
+  conn: 4
+  kcp:
+    mode: "fast2"
+    mtu: 1350
+    rcvwnd: 4096
+    sndwnd: 4096
+    block: "aes"
+    key: "${key}"
+    guard: true
+    guard_magic: "PQT1"
+    guard_window: 30
+    guard_skew: 1
+    header_timeout: 10
+    smuxbuf: 16777216
+    streambuf: 4194304
+EOF
+}
+
+setup_outside_server() {
+  local iface ip gw mac port key
+  iface="$(detect_default_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    msg "نتونستم اینترفیس پیش‌فرض رو پیدا کنم."
+    return 1
+  fi
+  ip="$(detect_local_ipv4 "${iface}" || true)"
+  if [[ -z "${ip}" ]]; then
+    msg "نتونستم IPv4 روی ${iface} پیدا کنم."
+    return 1
+  fi
+  gw="$(detect_gateway_ipv4 || true)"
+  if [[ -z "${gw}" ]]; then
+    msg "نتونستم gateway پیش‌فرض رو پیدا کنم."
+    return 1
+  fi
+  mac="$(ensure_gateway_mac "${gw}" "${iface}" || true)"
+  if [[ -z "${mac}" ]]; then
+    msg "نتونستم MAC روتر (gateway) رو پیدا کنم. لطفاً gateway رو ping کنید و دوباره تلاش کنید."
+    return 1
+  fi
+
+  port="$(input "${APP}" "پورت سرور خارج؟ (پیش‌فرض 9999)" "9999")" || return 1
+  key="$("${BIN}" secret)"
+
+  mkdir -p "${CONFIG_DIR}"
+  gen_server_config "${iface}" "${ip}" "${mac}" "${port}" "${key}"
+  chmod 600 "${CONFIG_FILE}"
+
+  write_sysctl_defaults
+  install_service
+  start_service
+
+  msg "سرور خارج ستاپ شد.\n\nکلید Pairing (این را به سرور داخل بده):\n${key}\n\nStatus از منو قابل مشاهده است."
+}
+
+setup_inside_server() {
+  local iface ip gw mac port remote key socks_listen user pass
+  iface="$(detect_default_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    msg "نتونستم اینترفیس پیش‌فرض رو پیدا کنم."
+    return 1
+  fi
+  ip="$(detect_local_ipv4 "${iface}" || true)"
+  if [[ -z "${ip}" ]]; then
+    msg "نتونستم IPv4 روی ${iface} پیدا کنم."
+    return 1
+  fi
+  gw="$(detect_gateway_ipv4 || true)"
+  if [[ -z "${gw}" ]]; then
+    msg "نتونستم gateway پیش‌فرض رو پیدا کنم."
+    return 1
+  fi
+  mac="$(ensure_gateway_mac "${gw}" "${iface}" || true)"
+  if [[ -z "${mac}" ]]; then
+    msg "نتونستم MAC روتر (gateway) رو پیدا کنم. لطفاً gateway رو ping کنید و دوباره تلاش کنید."
+    return 1
+  fi
+
+  remote="$(input "${APP}" "IP سرور خارج؟ (مثال: 1.2.3.4)" "")" || return 1
+  port="$(input "${APP}" "پورت سرور خارج؟ (پیش‌فرض 9999)" "9999")" || return 1
+  key="$(password "${APP}" "کلید Pairing که روی سرور خارج نمایش داده شد را وارد کن")" || return 1
+
+  socks_listen="127.0.0.1:1080"
+  if yesno "${APP}" "SOCKS5 روی 0.0.0.0:1080 باز شود؟ (فقط اگر می‌دانی چه می‌کنی)"; then
+    socks_listen="0.0.0.0:1080"
+  fi
+  user=""
+  pass=""
+  if yesno "${APP}" "برای SOCKS5 یوزر/پسورد بگذاریم؟ (پیشنهادی)"; then
+    user="$(input "${APP}" "Username:" "user")" || return 1
+    pass="$(password "${APP}" "Password:" )" || return 1
+  fi
+
+  mkdir -p "${CONFIG_DIR}"
+  gen_client_config "${iface}" "${ip}" "${mac}" "${remote}" "${port}" "${key}" "${socks_listen}" "${user}" "${pass}"
+  chmod 600 "${CONFIG_FILE}"
+
+  write_sysctl_defaults
+  install_service
+  start_service
+
+  msg "سرور داخل (کلاینت) ستاپ شد.\n\nSOCKS5: ${socks_listen}\nخارج: ${remote}:${port}"
+}
+
+main_loop() {
+  while true; do
+    local choice
+    choice="$(menu "${APP}" "یک گزینه را انتخاب کن:" \
+      "1" "ستاپ سرور خارج (Server)" \
+      "2" "ستاپ سرور داخل (Client + SOCKS5)" \
+      "3" "Status" \
+      "4" "Logs" \
+      "5" "Restart service" \
+      "6" "Stop service" \
+      "7" "Uninstall" \
+      "0" "Exit")" || exit 0
+
+    case "${choice}" in
+      1) setup_outside_server ;;
+      2) setup_inside_server ;;
+      3) status_screen ;;
+      4) logs_screen ;;
+      5) systemctl restart "${SERVICE_NAME}" || msg "restart failed" ;;
+      6) systemctl stop "${SERVICE_NAME}" || true ;;
+      7) uninstall_all ;;
+      0) exit 0 ;;
+    esac
+  done
+}
+
+need_root "$@"
+ensure_deps
+main_loop
+
+

@@ -1,0 +1,124 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"paqet/internal/conf"
+	"paqet/internal/flog"
+	"paqet/internal/socket"
+	"paqet/internal/tnet"
+	"paqet/internal/tnet/kcp"
+	"sync"
+	"syscall"
+	"time"
+)
+
+type Server struct {
+	cfg   *conf.Conf
+	pConn *socket.PacketConn
+	wg    sync.WaitGroup
+
+	sessSem             chan struct{}
+	streamSem           chan struct{}
+	maxStreamsPerSession int
+	headerTimeout       time.Duration
+}
+
+func New(cfg *conf.Conf) (*Server, error) {
+	s := &Server{
+		cfg: cfg,
+	}
+
+	if cfg.Transport.KCP != nil {
+		k := cfg.Transport.KCP
+		s.headerTimeout = time.Duration(k.HeaderTimeout) * time.Second
+		if s.headerTimeout <= 0 {
+			s.headerTimeout = 10 * time.Second
+		}
+		if k.MaxSessions > 0 {
+			s.sessSem = make(chan struct{}, k.MaxSessions)
+		}
+		if k.MaxStreamsTotal > 0 {
+			s.streamSem = make(chan struct{}, k.MaxStreamsTotal)
+		}
+		if k.MaxStreamsPerSession > 0 {
+			s.maxStreamsPerSession = k.MaxStreamsPerSession
+		}
+	}
+
+	return s, nil
+}
+
+func (s *Server) Start() error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sig
+		flog.Infof("Shutdown signal received, initiating graceful shutdown...")
+		cancel()
+	}()
+
+	pConn, err := socket.New(ctx, &s.cfg.Network)
+	if err != nil {
+		return fmt.Errorf("could not create raw packet conn: %w", err)
+	}
+	s.pConn = pConn
+
+	listener, err := kcp.Listen(s.cfg.Transport.KCP, pConn)
+	if err != nil {
+		return fmt.Errorf("could not start KCP listener: %w", err)
+	}
+	defer listener.Close()
+	flog.Infof("Server started - listening for packets on :%d", s.cfg.Listen.Addr.Port)
+
+	s.wg.Go(func() {
+		s.listen(ctx, listener)
+	})
+
+	s.wg.Wait()
+	flog.Infof("Server shutdown completed")
+	return nil
+}
+
+func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
+	go func() {
+		<-ctx.Done()
+		listener.Close()
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		conn, err := listener.Accept()
+		if err != nil {
+			flog.Errorf("failed to accept connection: %v", err)
+			return
+		}
+		if s.sessSem != nil {
+			select {
+			case s.sessSem <- struct{}{}:
+			default:
+				flog.Warnf("dropping new connection from %s: max_sessions reached", conn.RemoteAddr())
+				conn.Close()
+				continue
+			}
+		}
+		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), conn.LocalAddr())
+
+		s.wg.Go(func() {
+			defer func() {
+				if s.sessSem != nil {
+					<-s.sessSem
+				}
+			}()
+			defer conn.Close()
+			s.handleConn(ctx, conn)
+		})
+	}
+}

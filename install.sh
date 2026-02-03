@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# One-liner friendly installer for Ubuntu/Debian.
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/<OWNER>/<REPO>/main/install.sh | sudo bash
+#
+# Env:
+#   PAQET_REPO=OWNER/REPO   (default: current repo name after you fork)
+
+REPO="${PAQET_REPO:-changecoin938/Tunnel}"
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    exec sudo -E bash "$0" "$@"
+  fi
+}
+
+need_root "$@"
+
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "apt-get not found (this installer is for Debian/Ubuntu)." >&2
+  exit 1
+fi
+
+arch="$(uname -m)"
+case "${arch}" in
+  x86_64|amd64) goarch="amd64" ;;
+  aarch64|arm64) goarch="arm64" ;;
+  *)
+    echo "unsupported arch: ${arch}" >&2
+    exit 1
+    ;;
+esac
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y --no-install-recommends \
+  ca-certificates curl tar \
+  iproute2 iptables \
+  whiptail \
+  libpcap0.8 \
+  procps \
+  systemd
+
+tmp="$(mktemp -d)"
+cleanup() { rm -rf "${tmp}"; }
+trap cleanup EXIT
+
+url="https://github.com/${REPO}/releases/latest/download/paqet-linux-${goarch}.tar.gz"
+echo "Downloading: ${url}"
+curl -fsSL "${url}" -o "${tmp}/paqet.tgz"
+
+tar -xzf "${tmp}/paqet.tgz" -C "${tmp}"
+
+install -m 0755 "${tmp}/paqet_linux_${goarch}" /usr/local/bin/paqet
+
+install -d /usr/local/lib/paqet
+if [[ -f "${tmp}/scripts/paqet-ui" ]]; then
+  install -m 0755 "${tmp}/scripts/paqet-ui" /usr/local/bin/paqet-ui
+else
+  echo "WARN: scripts/paqet-ui not found in release tarball." >&2
+fi
+if [[ -f "${tmp}/scripts/paqet-iptables.sh" ]]; then
+  install -m 0755 "${tmp}/scripts/paqet-iptables.sh" /usr/local/lib/paqet/paqet-iptables.sh
+else
+  echo "WARN: scripts/paqet-iptables.sh not found in release tarball." >&2
+fi
+
+echo "Installed: /usr/local/bin/paqet"
+echo "Launching UI: paqet-ui"
+exec /usr/local/bin/paqet-ui
+
+
