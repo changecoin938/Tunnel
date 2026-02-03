@@ -25,7 +25,7 @@ need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 ensure_deps() {
   local missing=()
-  for c in whiptail ip iptables systemctl awk sed grep cut tr head tail curl; do
+  for c in whiptail ip ss iptables systemctl awk sed grep cut tr head tail curl; do
     need_cmd "$c" || missing+=("$c")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
@@ -67,6 +67,93 @@ menu() {
   local title="$1" prompt="$2"
   shift 2
   whiptail --title "${title}" --menu "${prompt}" 18 78 10 "$@" 3>&1 1>&2 2>&3
+}
+
+ss_listen_tcp() {
+  # Output TCP LISTEN sockets for a port (best-effort).
+  local port="$1"
+  ss -lntpH "sport = :${port}" 2>/dev/null || true
+}
+
+extract_pids_from_ss() {
+  # Extract pid list from ss output.
+  grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u
+}
+
+is_tcp_port_listening() {
+  local port="$1"
+  local out
+  out="$(ss_listen_tcp "${port}")"
+  [[ -n "${out}" ]]
+}
+
+kill_port_pids() {
+  local port="$1"
+  local out pids
+  out="$(ss_listen_tcp "${port}")"
+  pids="$(printf "%s\n" "${out}" | extract_pids_from_ss || true)"
+  if [[ -z "${pids}" ]]; then
+    msg "نتونستم PID رو از ss پیدا کنم.\n\n${out}"
+    return 1
+  fi
+
+  if ! yesno "${APP}" "این PIDها روی پورت ${port} گوش میدن:\n${pids}\n\nKill کنیم؟"; then
+    return 1
+  fi
+
+  for pid in ${pids}; do
+    kill -TERM "${pid}" >/dev/null 2>&1 || true
+  done
+  sleep 1
+  for pid in ${pids}; do
+    kill -KILL "${pid}" >/dev/null 2>&1 || true
+  done
+  return 0
+}
+
+ensure_tcp_port_free_or_prompt() {
+  # Loops until port is free, or user cancels. Prints the chosen port.
+  local port="$1"
+  local purpose="$2"
+
+  while is_tcp_port_listening "${port}"; do
+    local out choice
+    out="$(ss_listen_tcp "${port}")"
+    choice="$(menu "${APP}" "پورت ${port} برای ${purpose} مشغول است.\n\n${out}\n\nچه کار کنیم؟" \
+      "1" "Stop paqet service (اگر خودش گرفته)" \
+      "2" "Kill process(es) on this port" \
+      "3" "Choose a different port" \
+      "0" "Cancel")" || return 1
+
+    case "${choice}" in
+      1)
+        systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+        ;;
+      2)
+        kill_port_pids "${port}" || true
+        ;;
+      3)
+        port="$(input "${APP}" "پورت جدید برای ${purpose}:" "${port}")" || return 1
+        ;;
+      0)
+        return 1
+        ;;
+    esac
+  done
+
+  printf "%s" "${port}"
+}
+
+ensure_service_can_reconfigure() {
+  # If service is active, ask user to stop or cancel.
+  if systemctl is-active --quiet "${SERVICE_NAME}" 2>/dev/null; then
+    if yesno "${APP}" "سرویس ${SERVICE_NAME} الان فعاله. برای ستاپ جدید باید متوقف بشه.\n\nStop کنیم؟"; then
+      systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    else
+      return 1
+    fi
+  fi
+  return 0
 }
 
 detect_default_iface() {
@@ -382,6 +469,7 @@ EOF
 
 setup_outside_server() {
   local iface ip gw mac port key
+  ensure_service_can_reconfigure || return 1
   iface="$(detect_default_iface || true)"
   if [[ -z "${iface}" ]]; then
     msg "نتونستم اینترفیس پیش‌فرض رو پیدا کنم."
@@ -404,10 +492,21 @@ setup_outside_server() {
   fi
 
   port="$(input "${APP}" "پورت سرور خارج؟ (پیش‌فرض 9999)" "9999")" || return 1
+  port="$(ensure_tcp_port_free_or_prompt "${port}" "Tunnel port (server)" )" || return 1
+
+  # debug/status port (pprof host)
+  local dbg_port
+  dbg_port="6060"
+  dbg_port="$(ensure_tcp_port_free_or_prompt "${dbg_port}" "Debug/Status (pprof)" )" || return 1
+
   key="$("${BIN}" secret)"
 
   mkdir -p "${CONFIG_DIR}"
   gen_server_config "${iface}" "${ip}" "${mac}" "${port}" "${key}"
+  # If user picked non-default debug port, patch config.
+  if [[ "${dbg_port}" != "6060" ]]; then
+    sed -i -E "s/pprof: \"127\\.0\\.0\\.1:6060\"/pprof: \"127.0.0.1:${dbg_port}\"/" "${CONFIG_FILE}" || true
+  fi
   chmod 600 "${CONFIG_FILE}"
 
   write_sysctl_defaults
@@ -418,7 +517,8 @@ setup_outside_server() {
 }
 
 setup_inside_server() {
-  local iface ip gw mac port remote key socks_listen user pass
+  local iface ip gw mac port remote key socks_host socks_port socks_listen user pass
+  ensure_service_can_reconfigure || return 1
   iface="$(detect_default_iface || true)"
   if [[ -z "${iface}" ]]; then
     msg "نتونستم اینترفیس پیش‌فرض رو پیدا کنم."
@@ -444,10 +544,19 @@ setup_inside_server() {
   port="$(input "${APP}" "پورت سرور خارج؟ (پیش‌فرض 9999)" "9999")" || return 1
   key="$(password "${APP}" "کلید Pairing که روی سرور خارج نمایش داده شد را وارد کن")" || return 1
 
-  socks_listen="127.0.0.1:1080"
+  socks_host="127.0.0.1"
   if yesno "${APP}" "SOCKS5 روی 0.0.0.0:1080 باز شود؟ (فقط اگر می‌دانی چه می‌کنی)"; then
-    socks_listen="0.0.0.0:1080"
+    socks_host="0.0.0.0"
   fi
+  socks_port="$(input "${APP}" "پورت SOCKS5؟ (پیش‌فرض 1080)" "1080")" || return 1
+  socks_port="$(ensure_tcp_port_free_or_prompt "${socks_port}" "SOCKS5" )" || return 1
+  socks_listen="${socks_host}:${socks_port}"
+
+  # debug/status port (pprof host)
+  local dbg_port
+  dbg_port="6060"
+  dbg_port="$(ensure_tcp_port_free_or_prompt "${dbg_port}" "Debug/Status (pprof)" )" || return 1
+
   user=""
   pass=""
   if yesno "${APP}" "برای SOCKS5 یوزر/پسورد بگذاریم؟ (پیشنهادی)"; then
@@ -457,6 +566,9 @@ setup_inside_server() {
 
   mkdir -p "${CONFIG_DIR}"
   gen_client_config "${iface}" "${ip}" "${mac}" "${remote}" "${port}" "${key}" "${socks_listen}" "${user}" "${pass}"
+  if [[ "${dbg_port}" != "6060" ]]; then
+    sed -i -E "s/pprof: \"127\\.0\\.0\\.1:6060\"/pprof: \"127.0.0.1:${dbg_port}\"/" "${CONFIG_FILE}" || true
+  fi
   chmod 600 "${CONFIG_FILE}"
 
   write_sysctl_defaults
