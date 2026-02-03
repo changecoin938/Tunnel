@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Ensure whiptail runs on a real TTY (important when launched via `curl | bash`).
+if [[ ! -t 0 || ! -t 1 || ! -t 2 ]]; then
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    exec </dev/tty >/dev/tty 2>/dev/tty
+  else
+    echo "No interactive TTY available. Run: sudo paqet-ui" >&2
+    exit 1
+  fi
+fi
+
 APP="paqet"
 BIN="/usr/local/bin/paqet"
 

@@ -69,6 +69,17 @@ fi
 
 echo "Installed: /usr/local/bin/paqet"
 echo "Launching UI: paqet-ui"
-exec /usr/local/bin/paqet-ui
+
+# If this installer was run as a one-liner (`curl | bash`), stdin is not a TTY.
+# Re-attach to /dev/tty so the UI can receive arrow keys / scroll input.
+if [[ -t 0 && -t 1 && -t 2 ]]; then
+  exec /usr/local/bin/paqet-ui
+fi
+if [[ -r /dev/tty && -w /dev/tty ]]; then
+  exec /usr/local/bin/paqet-ui </dev/tty >/dev/tty 2>/dev/tty
+fi
+
+echo "No interactive TTY available. Run: sudo paqet-ui" >&2
+exit 1
 
 
