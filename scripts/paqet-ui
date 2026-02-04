@@ -379,6 +379,18 @@ get_socks_listen_from_config() {
   fi
 }
 
+get_socks_user_from_config() {
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    grep -E '^[[:space:]]*username:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*username:[[:space:]]*"?([^"[:space:]]*)"?.*$/\1/'
+  fi
+}
+
+get_socks_pass_from_config() {
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    grep -E '^[[:space:]]*password:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*password:[[:space:]]*"?([^"[:space:]]*)"?.*$/\1/'
+  fi
+}
+
 has_forward_section() {
   [[ -f "${CONFIG_FILE}" ]] && grep -qE '^[[:space:]]*forward:[[:space:]]*$' "${CONFIG_FILE}"
 }
@@ -465,8 +477,18 @@ socks_test_screen() {
     [::]:*) socks="[::1]:${socks#[::]:}" ;;
   esac
 
+  local user pass auth_args
+  user="$(get_socks_user_from_config || true)"
+  pass="$(get_socks_pass_from_config || true)"
+  auth_args=()
+  if [[ -n "${user}" ]]; then
+    auth_args=(--proxy-user "${user}:${pass}")
+  fi
+
+
   out="$(curl -fsS -o /dev/null --max-time 15 \
-    --proxy "socks5h://${socks}" \
+    "${auth_args[@]}" \
+      --proxy "socks5h://${socks}" \
     -w "proxy=${socks}\nhttp_code=%{http_code}\ntime_total=%{time_total}s\n" \
     https://www.gstatic.com/generate_204 2>&1 || true)"
 
@@ -695,7 +717,7 @@ setup_inside_server() {
   key="$(password "${APP}" "کلید Pairing که روی سرور خارج نمایش داده شد را وارد کن")" || return 1
 
   socks_host="127.0.0.1"
-  if yesno "${APP}" "SOCKS5 روی 0.0.0.0:1080 باز شود؟ (فقط اگر می‌دانی چه می‌کنی)"; then
+  if yesno "${APP}" "SOCKS5 روی 0.0.0.0:1080 باز شود؟ (خطرناک: اگر بدون یوزر/پسورد باشد open-proxy می‌شود)"; then
     socks_host="0.0.0.0"
   fi
   socks_port="1080"
@@ -709,9 +731,26 @@ setup_inside_server() {
 
   user=""
   pass=""
-  if yesno "${APP}" "برای SOCKS5 یوزر/پسورد بگذاریم؟ (پیشنهادی)"; then
-    user="$(input "${APP}" "Username:" "user")" || return 1
-    pass="$(password "${APP}" "Password:" )" || return 1
+
+  if [[ "${socks_host}" == "0.0.0.0" || "${socks_host}" == "[::]" ]]; then
+    msg "هشدار امنیتی:
+
+SOCKS5 روی 0.0.0.0 باز است و بدون یوزر/پسورد قابل سوءاستفاده است.
+
+برای ادامه باید یوزر/پسورد بگذاری (پیشنهاد: پسورد قوی)."
+    while true; do
+      user="$(input "${APP}" "SOCKS5 Username:" "user")" || return 1
+      pass="$(password "${APP}" "SOCKS5 Password:" )" || return 1
+      if [[ -n "${user}" && -n "${pass}" ]]; then
+        break
+      fi
+      msg "یوزر/پسورد نمی‌تواند خالی باشد."
+    done
+  else
+    if yesno "${APP}" "برای SOCKS5 یوزر/پسورد بگذاریم؟ (پیشنهادی)"; then
+      user="$(input "${APP}" "Username:" "user")" || return 1
+      pass="$(password "${APP}" "Password:" )" || return 1
+    fi
   fi
 
   mkdir -p "${CONFIG_DIR}"
