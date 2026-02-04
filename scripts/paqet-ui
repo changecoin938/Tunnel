@@ -340,13 +340,13 @@ get_pprof_addr_from_config() {
 diag_text_fetch() {
   local addr
   addr="$(get_pprof_addr_from_config)"
-  curl -fsS --max-time 2 "http://${addr}/debug/paqet/text" 2>&1
+  curl --noproxy "*" -fsS --max-time 2 "http://${addr}/debug/paqet/text" 2>&1
 }
 
 diag_text_screen() {
   local out
   out="$(diag_text_fetch || true)"
-  if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404'; then
+  if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404|url rejected|bad hostname'; then
     out="${out}\n\nNOTE: detailed tunnel status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
   fi
   printf "%b\n" "${out}" | textbox "${APP} tunnel status (detailed)" 22 78
@@ -355,13 +355,13 @@ diag_text_screen() {
 diag_json_fetch() {
   local addr
   addr="$(get_pprof_addr_from_config)"
-  curl -fsS --max-time 2 "http://${addr}/debug/paqet/status" 2>&1
+  curl --noproxy "*" -fsS --max-time 2 "http://${addr}/debug/paqet/status" 2>&1
 }
 
 diag_json_screen() {
   local out
   out="$(diag_json_fetch || true)"
-  if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404'; then
+  if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404|url rejected|bad hostname'; then
     out="${out}\n\nNOTE: JSON status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
   fi
   printf "%b\n" "${out}" | textbox "${APP} tunnel status (json)" 22 78
@@ -432,7 +432,7 @@ enable_vless_relay_wizard() {
 
   # Portless UX: fixed defaults. Only prompts if port is busy.
   public_port="443"
-  public_port="$(ensure_tcp_port_free_or_prompt_simple "${public_port}" "VLESS entrypoint (inside)" )" || return 1
+  public_port="$(ensure_tcp_port_free_or_prompt "${public_port}" "VLESS entrypoint (inside)" )" || return 1
 
   xray_port="2443"
 
@@ -459,6 +459,12 @@ socks_test_screen() {
     socks="127.0.0.1:1080"
   fi
 
+  # If SOCKS listens on a wildcard address, use loopback for the local test.
+  case "${socks}" in
+    0.0.0.0:*) socks="127.0.0.1:${socks#0.0.0.0:}" ;;
+    [::]:*) socks="[::1]:${socks#[::]:}" ;;
+  esac
+
   out="$(curl -fsS -o /dev/null --max-time 15 \
     --proxy "socks5h://${socks}" \
     -w "proxy=${socks}\nhttp_code=%{http_code}\ntime_total=%{time_total}s\n" \
@@ -483,10 +489,16 @@ throughput_screen() {
     msg "Could not fetch diagnostics. Is paqet running and debug.pprof enabled?"
     return 0
   fi
-  read -r up1 down1 < <(printf "%s\n" "${a}" | extract_bytes_line || true)
+  if ! read -r up1 down1 < <(printf "%s\n" "${a}" | extract_bytes_line || true); then
+    msg "Failed to parse counters. (Try Detailed Status first.)"
+    return 0
+  fi
   sleep 1
   b="$(diag_text_fetch || true)"
-  read -r up2 down2 < <(printf "%s\n" "${b}" | extract_bytes_line || true)
+  if ! read -r up2 down2 < <(printf "%s\n" "${b}" | extract_bytes_line || true); then
+    msg "Failed to parse counters. (Try Detailed Status first.)"
+    return 0
+  fi
 
   if [[ -z "${up1:-}" || -z "${down1:-}" || -z "${up2:-}" || -z "${down2:-}" ]]; then
     msg "Failed to parse counters. (Try Detailed Status first.)"
