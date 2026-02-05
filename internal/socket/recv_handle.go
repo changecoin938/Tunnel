@@ -37,7 +37,7 @@ func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
 	}
 
 	return &RecvHandle{
-		handle:     handle,
+		handle:    handle,
 		addrCache: make(map[addrKey]*net.UDPAddr, 1024),
 	}, nil
 }
@@ -46,6 +46,12 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
 	for {
 		data, _, err := h.handle.ZeroCopyReadPacketData()
 		if err != nil {
+			// If a finite timeout is configured on the pcap handle, libpcap returns
+			// NextErrorTimeoutExpired when no packets arrive within the window.
+			// This is NOT fatal; keep waiting.
+			if err == pcap.NextErrorTimeoutExpired {
+				continue
+			}
 			return nil, nil, err
 		}
 
