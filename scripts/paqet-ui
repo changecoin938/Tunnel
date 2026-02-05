@@ -80,10 +80,12 @@ choose_cpu_profile() {
       PCAP_TIMEOUT_MS="0"
       ;;
     2)
-      # CPU saver: allow pcap buffering + slightly less aggressive KCP.
-      KCP_MODE="normal"
+      # CPU saver (safe for TCP relays like X-UI):
+      # Keep KCP fast, but disable pcap immediate mode to reduce syscall/packet overhead.
+      # Use a small timeout to avoid adding too much jitter/latency (which can kill TCP throughput).
+      KCP_MODE="fast"
       PCAP_IMMEDIATE="false"
-      PCAP_TIMEOUT_MS="10"
+      PCAP_TIMEOUT_MS="2"
       ;;
     0) return 1 ;;
   esac
