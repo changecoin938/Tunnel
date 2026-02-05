@@ -511,6 +511,27 @@ has_forward_section() {
   [[ -f "${CONFIG_FILE}" ]] && grep -qE '^[[:space:]]*forward:[[:space:]]*$' "${CONFIG_FILE}"
 }
 
+remove_socks_section() {
+  # Remove the entire top-level "socks5:" block (if present).
+  # Useful for "X-UI only" deployments where SOCKS is not needed and should not listen.
+  [[ -f "${CONFIG_FILE}" ]] || return 0
+  local tmp
+  tmp="$(mktemp)"
+
+  awk '
+    BEGIN { in_s=0 }
+    # Start of socks block
+    /^[[:space:]]*socks5:[[:space:]]*$/ { in_s=1; next }
+    # End of socks block when next top-level key starts (non-indented)
+    in_s && /^[^[:space:]][^:]*:/ { in_s=0 }
+    # Print lines when not inside socks block
+    !in_s { print $0 }
+  ' "${CONFIG_FILE}" >"${tmp}"
+
+  mv "${tmp}" "${CONFIG_FILE}"
+  chmod 600 "${CONFIG_FILE}" || true
+}
+
 set_forward_single_rule() {
   # Replace the entire top-level "forward:" block with a single TCP rule.
   # This keeps the setup predictable and avoids duplicate YAML keys.
@@ -567,12 +588,14 @@ enable_vless_relay_wizard() {
   listen_addr="0.0.0.0:${public_port}"
   target_addr="127.0.0.1:${xray_port}"
 
+  # X-UI only means no SOCKS should remain listening (avoid confusion + attack surface).
+  remove_socks_section
   set_forward_single_rule "${listen_addr}" "${target_addr}"
 
   install_service
   start_service
 
-  msg "✅ VLESS Relay فعال شد.\n\nروی سرور خارج در x-ui یک inbound بساز:\n  VLESS / TCP\n  listen: 127.0.0.1\n  port:   ${xray_port}\n\nبعد روی کلاینت‌ها:\n  address = IP ایران\n  port    = ${public_port}\n  uuid/flow/... = همون x-ui"
+  msg "✅ X-UI Relay فعال شد.\n\n- روی سرور داخل: SOCKS حذف شد و فقط این forward فعال است:\n  ${listen_addr}  ->  ${target_addr}\n\n- روی سرور خارج در x-ui یک inbound بساز:\n  VLESS / TCP\n  listen: 127.0.0.1\n  port:   ${xray_port}\n\nبعد روی کلاینت‌ها:\n  address = IP ایران\n  port    = ${public_port}\n  uuid/flow/... = همون x-ui"
 }
 
 socks_test_screen() {
@@ -973,7 +996,7 @@ main_loop() {
     choice="$(menu "${APP}" "یک گزینه را انتخاب کن:" \
       "1" "ستاپ سرور خارج (Server)" \
       "2" "ستاپ سرور داخل (Client + SOCKS5)" \
-      "12" "Enable VLESS relay (x-ui on outside, no panel inside)" \
+      "12" "Enable X-UI relay (Forward 443 -> 127.0.0.1:2443, disables SOCKS)" \
       "14" "CPU profile (optimize CPU settings)" \
       "3" "Status" \
       "4" "Logs" \
