@@ -820,6 +820,52 @@ transport:
 EOF
 }
 
+gen_client_config_no_socks() {
+  # X-UI only mode: do not generate a SOCKS listener at all.
+  local iface="$1" ip="$2" router_mac="$3" remote_ip="$4" port="$5" key="$6"
+  local key_q
+  key_q="$(yaml_quote "${key}")"
+  cat >"${CONFIG_FILE}" <<EOF
+role: "client"
+
+log:
+  level: "info"
+
+network:
+  interface: "${iface}"
+  ipv4:
+    addr: "${ip}:0"
+    router_mac: "${router_mac}"
+  pcap:
+    sockbuf: 16777216
+    snaplen: ${PCAP_SNAPLEN}
+    promisc: ${PCAP_PROMISC}
+    immediate: ${PCAP_IMMEDIATE}
+    timeout_ms: ${PCAP_TIMEOUT_MS}
+
+server:
+  addr: "${remote_ip}:${port}"
+
+transport:
+  protocol: "kcp"
+  conn: 1
+  kcp:
+    mode: "${KCP_MODE}"
+    mtu: 1350
+    rcvwnd: 4096
+    sndwnd: 4096
+    block: "aes"
+    key: ${key_q}
+    guard: true
+    guard_magic: "PQT1"
+    guard_window: 30
+    guard_skew: 1
+    header_timeout: 10
+    smuxbuf: 16777216
+    streambuf: 4194304
+EOF
+}
+
 tune_cpu_profile() {
   if [[ ! -f "${CONFIG_FILE}" ]]; then
     msg "کانفیگ پیدا نشد: ${CONFIG_FILE}\n\nاول یک‌بار ستاپ رو انجام بده."
@@ -990,6 +1036,57 @@ setup_inside_server() {
   fi
 }
 
+setup_inside_xui_only() {
+  # One-step inside setup for X-UI only (no SOCKS, no extra ports):
+  # Listens on 0.0.0.0:<public_port> and forwards via tunnel to outside 127.0.0.1:2443.
+  local iface ip gw mac remote key public_port xray_port listen_addr target_addr
+  ensure_service_can_reconfigure || return 1
+  iface="$(detect_default_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    msg "نتونستم اینترفیس پیش‌فرض رو پیدا کنم."
+    return 1
+  fi
+  ip="$(detect_local_ipv4 "${iface}" || true)"
+  if [[ -z "${ip}" ]]; then
+    msg "نتونستم IPv4 روی ${iface} پیدا کنم."
+    return 1
+  fi
+  gw="$(detect_gateway_ipv4 || true)"
+  if [[ -z "${gw}" ]]; then
+    msg "نتونستم gateway پیش‌فرض رو پیدا کنم."
+    return 1
+  fi
+  mac="$(ensure_gateway_mac "${gw}" "${iface}" || true)"
+  if [[ -z "${mac}" ]]; then
+    msg "نتونستم MAC روتر (gateway) رو پیدا کنم. لطفاً gateway رو ping کنید و دوباره تلاش کنید."
+    return 1
+  fi
+
+  remote="$(input "${APP}" "IP سرور خارج؟ (مثال: 1.2.3.4)" "")" || return 1
+  port="9999"
+  key="$(password "${APP}" "کلید Pairing که روی سرور خارج نمایش داده شد را وارد کن")" || return 1
+
+  public_port="443"
+  public_port="$(ensure_tcp_port_free_or_prompt "${public_port}" "X-UI entrypoint (inside)" )" || return 1
+
+  xray_port="2443"
+  listen_addr="0.0.0.0:${public_port}"
+  target_addr="127.0.0.1:${xray_port}"
+
+  choose_cpu_profile || return 1
+
+  mkdir -p "${CONFIG_DIR}"
+  gen_client_config_no_socks "${iface}" "${ip}" "${mac}" "${remote}" "${port}" "${key}"
+  set_forward_single_rule "${listen_addr}" "${target_addr}"
+  chmod 600 "${CONFIG_FILE}"
+
+  write_sysctl_defaults
+  install_service
+  start_service
+
+  msg "سرور داخل برای X-UI ستاپ شد.\n\nForward:\n  ${listen_addr}  ->  ${target_addr}\n\nروی سرور خارج در x-ui inbound بساز:\n  VLESS / TCP\n  listen: 127.0.0.1\n  port:   ${xray_port}\n\nبعد روی کلاینت‌ها:\n  address = IP ایران\n  port    = ${public_port}"
+}
+
 main_loop() {
   while true; do
     local choice
@@ -997,6 +1094,7 @@ main_loop() {
       "1" "ستاپ سرور خارج (Server)" \
       "2" "ستاپ سرور داخل (Client + SOCKS5)" \
       "12" "Enable X-UI relay (Forward 443 -> 127.0.0.1:2443, disables SOCKS)" \
+      "15" "Setup inside (X-UI only, one-step, no SOCKS)" \
       "14" "CPU profile (optimize CPU settings)" \
       "3" "Status" \
       "4" "Logs" \
@@ -1014,6 +1112,7 @@ main_loop() {
       1) setup_outside_server ;;
       2) setup_inside_server ;;
       12) enable_vless_relay_wizard ;;
+      15) setup_inside_xui_only ;;
       14) tune_cpu_profile ;;
       3) status_screen ;;
       4) logs_screen ;;
