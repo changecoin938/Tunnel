@@ -18,6 +18,59 @@ need_root() {
 
 need_root "$@"
 
+# Optional command mode:
+#   curl -fsSL https://raw.githubusercontent.com/<OWNER>/<REPO>/main/install.sh | sudo bash -s -- purge
+# This removes paqet service, configs, sysctl tuning, iptables rules (best-effort), and binaries.
+if [[ "${1:-}" == "purge" || "${1:-}" == "uninstall" ]]; then
+  SERVICE="paqet"
+  SERVICE_FILE="/etc/systemd/system/${SERVICE}.service"
+  CONFIG_DIR="/etc/paqet"
+  CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+  SYSCTL_CONF="/etc/sysctl.d/99-paqet.conf"
+
+  BIN="/usr/local/bin/paqet"
+  UI="/usr/local/bin/paqet-ui"
+  LIB_DIR="/usr/local/lib/paqet"
+  IPT_SH="${LIB_DIR}/paqet-iptables.sh"
+  IPT_SYSTEMD_SH="${LIB_DIR}/paqet-systemd-iptables.sh"
+
+  # Stop/disable service (best-effort)
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop "${SERVICE}" 2>/dev/null || true
+    systemctl disable "${SERVICE}" 2>/dev/null || true
+  fi
+
+  # Remove iptables rules (best-effort, server role only)
+  if [[ -x "${IPT_SYSTEMD_SH}" && -f "${CONFIG_FILE}" ]]; then
+    "${IPT_SYSTEMD_SH}" remove "${CONFIG_FILE}" || true
+  elif [[ -x "${IPT_SH}" && -f "${CONFIG_FILE}" ]]; then
+    # Fallback: attempt to parse listen port from addr: ":PORT"
+    port="$(grep -E '^[[:space:]]*addr:[[:space:]]*"?:[0-9]+' "${CONFIG_FILE}" | head -n1 | tr -cd 0-9 || true)"
+    if [[ -n "${port}" ]]; then
+      "${IPT_SH}" remove "${port}" || true
+    fi
+  fi
+
+  # Remove files
+  rm -f "${SERVICE_FILE}" || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed "${SERVICE}" 2>/dev/null || true
+  fi
+
+  rm -rf "${CONFIG_DIR}" || true
+  rm -f "${SYSCTL_CONF}" || true
+  if command -v sysctl >/dev/null 2>&1; then
+    sysctl --system >/dev/null 2>&1 || true
+  fi
+
+  rm -f "${BIN}" "${UI}" || true
+  rm -rf "${LIB_DIR}" || true
+
+  echo "OK: paqet purged."
+  exit 0
+fi
+
 if ! command -v apt-get >/dev/null 2>&1; then
   echo "apt-get not found (this installer is for Debian/Ubuntu)." >&2
   exit 1
@@ -66,6 +119,11 @@ if [[ -f "${tmp}/scripts/paqet-iptables.sh" ]]; then
   install -m 0755 "${tmp}/scripts/paqet-iptables.sh" /usr/local/lib/paqet/paqet-iptables.sh
 else
   echo "WARN: scripts/paqet-iptables.sh not found in release tarball." >&2
+fi
+if [[ -f "${tmp}/scripts/paqet-systemd-iptables.sh" ]]; then
+  install -m 0755 "${tmp}/scripts/paqet-systemd-iptables.sh" /usr/local/lib/paqet/paqet-systemd-iptables.sh
+else
+  echo "WARN: scripts/paqet-systemd-iptables.sh not found in release tarball." >&2
 fi
 
 echo "Installed: /usr/local/bin/paqet"

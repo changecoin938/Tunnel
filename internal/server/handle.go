@@ -18,20 +18,20 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 	for {
 		select {
 		case <-ctx.Done():
-			flog.Debugf("stopping smux session for %s due to context cancellation", conn.RemoteAddr())
+			flog.Debugf("stopping smux session for %v due to context cancellation", conn.RemoteAddr())
 			return
 		default:
 		}
 		strm, err := conn.AcceptStrm()
 		if err != nil {
-			flog.Errorf("failed to accept stream on %s: %v", conn.RemoteAddr(), err)
+			flog.Errorf("failed to accept stream on %v: %v", conn.RemoteAddr(), err)
 			return
 		}
 		if perSem != nil {
 			select {
 			case perSem <- struct{}{}:
 			default:
-				flog.Warnf("dropping stream from %s: max_streams_per_session reached", conn.RemoteAddr())
+				flog.Warnf("dropping stream from %v: max_streams_per_session reached", conn.RemoteAddr())
 				strm.Close()
 				continue
 			}
@@ -43,7 +43,7 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 				if perSem != nil {
 					<-perSem
 				}
-				flog.Warnf("dropping stream %d from %s: max_streams_total reached", strm.SID(), conn.RemoteAddr())
+				flog.Warnf("dropping stream %d from %v: max_streams_total reached", strm.SID(), conn.RemoteAddr())
 				strm.Close()
 				continue
 			}
@@ -61,9 +61,9 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 			}()
 			defer strm.Close()
 			if err := s.handleStrm(ctx, strm); err != nil {
-				flog.Errorf("stream %d from %s closed with error: %v", strm.SID(), strm.RemoteAddr(), err)
+				flog.Errorf("stream %d from %v closed with error: %v", strm.SID(), strm.RemoteAddr(), err)
 			} else {
-				flog.Debugf("stream %d from %s closed", strm.SID(), strm.RemoteAddr())
+				flog.Debugf("stream %d from %v closed", strm.SID(), strm.RemoteAddr())
 			}
 		})
 	}

@@ -105,13 +105,13 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			select {
 			case s.sessSem <- struct{}{}:
 			default:
-				flog.Warnf("dropping new connection from %s: max_sessions reached", conn.RemoteAddr())
+				flog.Warnf("dropping new connection from %v: max_sessions reached", conn.RemoteAddr())
 				conn.Close()
 				continue
 			}
 		}
 		diag.IncSessions()
-		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), conn.LocalAddr())
+		flog.Infof("accepted new connection from %v (local: %v)", conn.RemoteAddr(), conn.LocalAddr())
 
 		s.wg.Go(func() {
 			defer func() {

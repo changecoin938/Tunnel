@@ -25,18 +25,21 @@ func (c *SOCKS5) validate() []error {
 	// Security: prevent accidental open-proxy SOCKS on public/LAN addresses.
 	// Allow unauthenticated SOCKS ONLY on loopback. If listening on any non-loopback
 	// address (including 0.0.0.0 / ::), require username+password.
+	//
+	// Prevent open-proxy misconfigurations by requiring auth on non-loopback binds.
+	// - If only one of username/password is set -> error (misconfig)
+	// - If listen is not loopback and username/password are empty -> refuse to run
 	if (c.Username == "") != (c.Password == "") {
-		errors = append(errors, fmt.Errorf("socks5 username/password must both be set (or both be empty)"))
+		errors = append(errors, fmt.Errorf("socks5.username and socks5.password must be set together"))
 	}
-	if c.Listen != nil {
-		ip := c.Listen.IP
-		isLoopback := ip != nil && ip.IsLoopback()
-		if !isLoopback {
-			if c.Username == "" || c.Password == "" {
-				errors = append(errors, fmt.Errorf("SOCKS5 listen address '%s' is not loopback; refusing to run without username/password (bind to 127.0.0.1/::1 or set socks5.username and socks5.password)", c.Listen_))
-			}
+	if addr != nil {
+		isLoopback := addr.IP != nil && addr.IP.IsLoopback()
+		if !isLoopback && (c.Username == "" || c.Password == "") {
+			errors = append(errors, fmt.Errorf(
+				"SOCKS5 listen address '%s' is not loopback; refusing to run without username/password (bind to 127.0.0.1/::1 or set socks5.username and socks5.password)",
+				c.Listen_,
+			))
 		}
 	}
-
 	return errors
 }

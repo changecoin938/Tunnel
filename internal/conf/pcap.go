@@ -6,7 +6,11 @@ import (
 )
 
 type PCAP struct {
-	Sockbuf int `yaml:"sockbuf"`
+	Sockbuf   int   `yaml:"sockbuf"`
+	Snaplen   int   `yaml:"snaplen"`
+	Promisc   bool  `yaml:"promisc"`
+	Immediate *bool `yaml:"immediate"`
+	TimeoutMs int   `yaml:"timeout_ms"`
 }
 
 func (p *PCAP) setDefaults(role string) {
@@ -17,6 +21,25 @@ func (p *PCAP) setDefaults(role string) {
 			p.Sockbuf = 4 * 1024 * 1024
 		}
 	}
+	if p.Snaplen == 0 {
+		// Bounds per-packet capture size (helps if filters miss or you see unexpected jumbo frames).
+		// paqet packets are small, so 2048 is typically plenty.
+		p.Snaplen = 2048
+	}
+	// Default to non-promiscuous capture (lower overhead). This tunnel only needs
+	// traffic destined for this host anyway (BPF filters further narrow it down).
+	//
+	// If you run in an unusual L2 environment and packets aren't captured, set:
+	//   network.pcap.promisc: true
+	//
+	// Promisc default is false, so only set it if you know you need it.
+
+	// Immediate mode trades CPU for lower latency. Keep current behavior by default.
+	if p.Immediate == nil {
+		v := true
+		p.Immediate = &v
+	}
+	// Timeout controls buffering when immediate=false. 0 means BlockForever (pcap default).
 }
 
 func (p *PCAP) validate() []error {
@@ -28,6 +51,15 @@ func (p *PCAP) validate() []error {
 
 	if p.Sockbuf > 100*1024*1024 {
 		errors = append(errors, fmt.Errorf("PCAP sockbuf too large (max 100MB)"))
+	}
+	if p.Snaplen < 256 {
+		errors = append(errors, fmt.Errorf("PCAP snaplen must be >= 256 bytes"))
+	}
+	if p.Snaplen > 65536 {
+		errors = append(errors, fmt.Errorf("PCAP snaplen too large (max 65536)"))
+	}
+	if p.TimeoutMs < 0 || p.TimeoutMs > 60_000 {
+		errors = append(errors, fmt.Errorf("PCAP timeout_ms must be between 0-60000"))
 	}
 
 	// Should be power of 2 for optimal performance, but not required

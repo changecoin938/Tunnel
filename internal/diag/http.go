@@ -9,6 +9,9 @@ import (
 var httpOnce sync.Once
 
 func RegisterHTTP() {
+	if !Enabled() {
+		return
+	}
 	httpOnce.Do(func() {
 		http.HandleFunc("/debug/paqet/healthz", func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)

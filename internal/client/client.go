@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"paqet/internal/conf"
+	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/iterator"
 	"paqet/internal/tnet"
@@ -35,7 +36,10 @@ func (c *Client) Start(ctx context.Context) error {
 		flog.Debugf("client connection %d established successfully", i+1)
 		c.iter.Items = append(c.iter.Items, tc)
 	}
-	go c.ticker(ctx)
+	// The ticker is only for diagnostics (ping RTT). Avoid extra streams/CPU in production.
+	if diag.Enabled() {
+		go c.ticker(ctx)
+	}
 
 	go func() {
 		<-ctx.Done()

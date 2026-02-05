@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Server) handleTCPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
-	flog.Infof("accepted TCP stream %d: %s -> %s", strm.SID(), strm.RemoteAddr(), p.Addr.String())
+	flog.Infof("accepted TCP stream %d: %v -> %s", strm.SID(), strm.RemoteAddr(), p.Addr.String())
 	return s.handleTCP(ctx, strm, p.Addr.String())
 }
 

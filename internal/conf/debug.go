@@ -10,12 +10,21 @@ import (
 type Debug struct {
 	// Pprof enables the Go pprof HTTP endpoints when set (e.g. "127.0.0.1:6060").
 	Pprof string `yaml:"pprof"`
+
+	// Diag enables paqet's lightweight counters + /debug/paqet/* endpoints.
+	// This is optional and can add overhead under very high PPS, so keep it off unless needed.
+	//
+	// Note: Requires Pprof to be set, because the debug HTTP server listens on the same address.
+	Diag bool `yaml:"diag"`
 }
 
 func (d *Debug) setDefaults() {}
 
 func (d *Debug) validate() []error {
 	var errors []error
+	if d.Diag && d.Pprof == "" {
+		errors = append(errors, fmt.Errorf("debug.diag requires debug.pprof to be set (e.g. \"127.0.0.1:6060\")"))
+	}
 	if d.Pprof == "" {
 		return errors
 	}
@@ -24,5 +33,3 @@ func (d *Debug) validate() []error {
 	}
 	return errors
 }
-
-

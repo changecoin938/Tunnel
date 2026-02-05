@@ -32,11 +32,47 @@ CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 
 LIB_DIR="/usr/local/lib/paqet"
 IPTABLES_SH="${LIB_DIR}/paqet-iptables.sh"
+IPTABLES_SYSTEMD_SH="${LIB_DIR}/paqet-systemd-iptables.sh"
 
 SERVICE_NAME="paqet"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 SYSCTL_CONF="/etc/sysctl.d/99-paqet.conf"
+
+# CPU profile defaults (balanced). These are embedded in generated configs.
+KCP_MODE="fast"
+PCAP_SNAPLEN="2048"
+PCAP_PROMISC="false"
+PCAP_IMMEDIATE="true"
+PCAP_TIMEOUT_MS="0"
+
+choose_cpu_profile() {
+  local choice
+  choice="$(menu "${APP}" "پروفایل مصرف CPU را انتخاب کن:\n\n- Balanced: کم‌ریسک، تأخیر کمتر\n- Low CPU: مصرف کمتر، احتمالاً کمی تأخیر بیشتر" \
+    "1" "Balanced (recommended)" \
+    "2" "Low CPU (lower CPU, may increase latency)" \
+    "0" "Cancel")" || return 1
+
+  case "${choice}" in
+    1)
+      KCP_MODE="fast"
+      PCAP_IMMEDIATE="true"
+      PCAP_TIMEOUT_MS="0"
+      ;;
+    2)
+      # CPU saver: allow pcap buffering + slightly less aggressive KCP.
+      KCP_MODE="normal"
+      PCAP_IMMEDIATE="false"
+      PCAP_TIMEOUT_MS="10"
+      ;;
+    0) return 1 ;;
+  esac
+
+  # Safe defaults for both profiles.
+  PCAP_SNAPLEN="2048"
+  PCAP_PROMISC="false"
+  return 0
+}
 
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -273,6 +309,10 @@ install_service() {
     msg "iptables helper not found at ${IPTABLES_SH}. Re-install scripts."
     return 1
   fi
+  if [[ ! -x "${IPTABLES_SYSTEMD_SH}" ]]; then
+    msg "systemd iptables helper not found at ${IPTABLES_SYSTEMD_SH}. Re-install scripts."
+    return 1
+  fi
 
   cat >"${SERVICE_FILE}" <<EOF
 [Unit]
@@ -282,9 +322,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStartPre=/bin/bash -lc 'port=\$(grep -E \"^\\s*addr:\\s*\\\"?:[0-9]+\\\"?\" -n ${CONFIG_FILE} | head -n1 | sed -E \"s/.*:([0-9]+)\\\"?\\s*$/\\1/\"); if [[ -n \"\$port\" ]]; then ${IPTABLES_SH} apply \"\$port\" || true; fi'
+ExecStartPre=${IPTABLES_SYSTEMD_SH} apply ${CONFIG_FILE}
 ExecStart=${BIN} run -c ${CONFIG_FILE}
-ExecStopPost=/bin/bash -lc 'port=\$(grep -E \"^\\s*addr:\\s*\\\"?:[0-9]+\\\"?\" -n ${CONFIG_FILE} | head -n1 | sed -E \"s/.*:([0-9]+)\\\"?\\s*$/\\1/\"); if [[ -n \"\$port\" ]]; then ${IPTABLES_SH} remove \"\$port\" || true; fi'
+ExecStopPost=${IPTABLES_SYSTEMD_SH} remove ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=1
 LimitNOFILE=1048576
@@ -347,7 +387,7 @@ diag_text_screen() {
   local out
   out="$(diag_text_fetch || true)"
   if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404|url rejected|bad hostname'; then
-    out="${out}\n\nNOTE: detailed tunnel status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
+    out="${out}\n\nNOTE: detailed tunnel status needs debug enabled and paqet restarted.\nConfig:\n  debug:\n    pprof: \"127.0.0.1:6060\"\n    diag: true"
   fi
   printf "%b\n" "${out}" | textbox "${APP} tunnel status (detailed)" 22 78
 }
@@ -362,7 +402,7 @@ diag_json_screen() {
   local out
   out="$(diag_json_fetch || true)"
   if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404|url rejected|bad hostname'; then
-    out="${out}\n\nNOTE: JSON status needs debug.pprof enabled and paqet restarted.\nConfig: debug.pprof: \"127.0.0.1:6060\""
+    out="${out}\n\nNOTE: JSON status needs debug enabled and paqet restarted.\nConfig:\n  debug:\n    pprof: \"127.0.0.1:6060\"\n    diag: true"
   fi
   printf "%b\n" "${out}" | textbox "${APP} tunnel status (json)" 22 78
 }
@@ -374,9 +414,65 @@ get_role_from_config() {
 }
 
 get_socks_listen_from_config() {
-  if [[ -f "${CONFIG_FILE}" ]]; then
-    grep -E '^[[:space:]]*listen:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*listen:[[:space:]]*\"?([^\"[:space:]]+)\"?.*$/\\1/'
-  fi
+  [[ -f "${CONFIG_FILE}" ]] || return 0
+  # Parse first socks5 item:
+  #   socks5:
+  #     - listen: "HOST:PORT"
+  awk '
+    BEGIN { in_socks=0 }
+    /^[[:space:]]*socks5:[[:space:]]*$/ { in_socks=1; next }
+    in_socks && /^[^[:space:]][^:]*:/ { in_socks=0 }
+    in_socks && /^[[:space:]]*-[[:space:]]*listen:[[:space:]]*/ {
+      line=$0
+      sub(/^[[:space:]]*-[[:space:]]*listen:[[:space:]]*/, "", line)
+      sub(/[[:space:]]+#.*/, "", line)
+      gsub(/^"/, "", line); gsub(/"$/, "", line)
+      print line
+      exit
+    }
+  ' "${CONFIG_FILE}"
+}
+
+get_socks_user_from_config() {
+  [[ -f "${CONFIG_FILE}" ]] || return 0
+  awk '
+    BEGIN { in_socks=0; item=0 }
+    /^[[:space:]]*socks5:[[:space:]]*$/ { in_socks=1; next }
+    in_socks && /^[^[:space:]][^:]*:/ { in_socks=0 }
+    in_socks {
+      if ($0 ~ /^[[:space:]]*-[[:space:]]*listen:[[:space:]]*/) { item++; next }
+      if (item==1 && $0 ~ /^[[:space:]]*username:[[:space:]]*/) {
+        line=$0
+        sub(/^[[:space:]]*username:[[:space:]]*/, "", line)
+        sub(/[[:space:]]+#.*/, "", line)
+        gsub(/^"/, "", line); gsub(/"$/, "", line)
+        print line
+        exit
+      }
+      if (item>1) exit
+    }
+  ' "${CONFIG_FILE}"
+}
+
+get_socks_pass_from_config() {
+  [[ -f "${CONFIG_FILE}" ]] || return 0
+  awk '
+    BEGIN { in_socks=0; item=0 }
+    /^[[:space:]]*socks5:[[:space:]]*$/ { in_socks=1; next }
+    in_socks && /^[^[:space:]][^:]*:/ { in_socks=0 }
+    in_socks {
+      if ($0 ~ /^[[:space:]]*-[[:space:]]*listen:[[:space:]]*/) { item++; next }
+      if (item==1 && $0 ~ /^[[:space:]]*password:[[:space:]]*/) {
+        line=$0
+        sub(/^[[:space:]]*password:[[:space:]]*/, "", line)
+        sub(/[[:space:]]+#.*/, "", line)
+        gsub(/^"/, "", line); gsub(/"$/, "", line)
+        print line
+        exit
+      }
+      if (item>1) exit
+    }
+  ' "${CONFIG_FILE}"
 }
 
 get_socks_user_from_config() {
@@ -460,7 +556,7 @@ enable_vless_relay_wizard() {
 }
 
 socks_test_screen() {
-  local role socks out
+  local role socks user pass out
   role="$(get_role_from_config || true)"
   if [[ "${role}" != "client" ]]; then
     msg "این گزینه فقط برای سرور داخل (client) است."
@@ -470,6 +566,8 @@ socks_test_screen() {
   if [[ -z "${socks}" ]]; then
     socks="127.0.0.1:1080"
   fi
+  user="$(get_socks_user_from_config || true)"
+  pass="$(get_socks_pass_from_config || true)"
 
   # If SOCKS listens on a wildcard address, use loopback for the local test.
   case "${socks}" in
@@ -477,18 +575,14 @@ socks_test_screen() {
     [::]:*) socks="[::1]:${socks#[::]:}" ;;
   esac
 
-  local user pass auth_args
-  user="$(get_socks_user_from_config || true)"
-  pass="$(get_socks_pass_from_config || true)"
-  auth_args=()
-  if [[ -n "${user}" ]]; then
-    auth_args=(--proxy-user "${user}:${pass}")
+  local -a curl_proxy_args
+  curl_proxy_args=(--proxy "socks5h://${socks}")
+  if [[ -n "${user}" && -n "${pass}" ]]; then
+    curl_proxy_args+=(--proxy-user "${user}:${pass}")
   fi
 
-
   out="$(curl -fsS -o /dev/null --max-time 15 \
-    "${auth_args[@]}" \
-      --proxy "socks5h://${socks}" \
+    "${curl_proxy_args[@]}" \
     -w "proxy=${socks}\nhttp_code=%{http_code}\ntime_total=%{time_total}s\n" \
     https://www.gstatic.com/generate_204 2>&1 || true)"
 
@@ -534,16 +628,53 @@ throughput_screen() {
 }
 
 uninstall_all() {
-  if ! yesno "${APP}" "این کار سرویس و فایل‌های paqet را پاک می‌کند. ادامه؟"; then
+  if ! yesno "${APP}" "این کار سرویس و فایل‌های paqet را پاک می‌کند (اما باینری‌ها را نگه می‌دارد). ادامه؟"; then
     return 0
   fi
+
+  # Stop service first (ExecStopPost may remove iptables rules).
   systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+
+  # Best-effort: remove server-side iptables rules explicitly.
+  if [[ -x "${IPTABLES_SYSTEMD_SH}" ]]; then
+    "${IPTABLES_SYSTEMD_SH}" remove "${CONFIG_FILE}" || true
+  fi
+
   systemctl disable "${SERVICE_NAME}" >/dev/null 2>&1 || true
   rm -f "${SERVICE_FILE}"
   systemctl daemon-reload >/dev/null 2>&1 || true
+
   rm -rf "${CONFIG_DIR}"
   rm -f "${SYSCTL_CONF}"
+  sysctl --system >/dev/null 2>&1 || true
+
   msg "Uninstall completed. (Binary remains: ${BIN})"
+}
+
+purge_all() {
+  if ! yesno "${APP}" "این کار حذف کامل انجام می‌دهد: سرویس، کانفیگ، sysctl، iptables rules و باینری‌ها. ادامه؟"; then
+    return 0
+  fi
+
+  systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  if [[ -x "${IPTABLES_SYSTEMD_SH}" ]]; then
+    "${IPTABLES_SYSTEMD_SH}" remove "${CONFIG_FILE}" || true
+  fi
+  systemctl disable "${SERVICE_NAME}" >/dev/null 2>&1 || true
+
+  rm -f "${SERVICE_FILE}" || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl reset-failed "${SERVICE_NAME}" >/dev/null 2>&1 || true
+
+  rm -rf "${CONFIG_DIR}" || true
+  rm -f "${SYSCTL_CONF}" || true
+  sysctl --system >/dev/null 2>&1 || true
+
+  # Remove binaries + scripts
+  rm -f "${BIN}" /usr/local/bin/paqet-ui || true
+  rm -rf "${LIB_DIR}" || true
+
+  msg "Purge completed."
 }
 
 gen_server_config() {
@@ -553,9 +684,6 @@ role: "server"
 
 log:
   level: "info"
-
-debug:
-  pprof: "127.0.0.1:6060"
 
 listen:
   addr: ":${port}"
@@ -567,12 +695,16 @@ network:
     router_mac: "${router_mac}"
   pcap:
     sockbuf: 33554432
+    snaplen: ${PCAP_SNAPLEN}
+    promisc: ${PCAP_PROMISC}
+    immediate: ${PCAP_IMMEDIATE}
+    timeout_ms: ${PCAP_TIMEOUT_MS}
 
 transport:
   protocol: "kcp"
   conn: 1
   kcp:
-    mode: "fast2"
+    mode: "${KCP_MODE}"
     mtu: 1350
     rcvwnd: 8192
     sndwnd: 8192
@@ -599,9 +731,6 @@ role: "client"
 log:
   level: "info"
 
-debug:
-  pprof: "127.0.0.1:6060"
-
 socks5:
   - listen: "${socks_listen}"
     username: "${user}"
@@ -614,15 +743,19 @@ network:
     router_mac: "${router_mac}"
   pcap:
     sockbuf: 16777216
+    snaplen: ${PCAP_SNAPLEN}
+    promisc: ${PCAP_PROMISC}
+    immediate: ${PCAP_IMMEDIATE}
+    timeout_ms: ${PCAP_TIMEOUT_MS}
 
 server:
   addr: "${remote_ip}:${port}"
 
 transport:
   protocol: "kcp"
-  conn: 4
+  conn: 1
   kcp:
-    mode: "fast2"
+    mode: "${KCP_MODE}"
     mtu: 1350
     rcvwnd: 4096
     sndwnd: 4096
@@ -636,6 +769,61 @@ transport:
     smuxbuf: 16777216
     streambuf: 4194304
 EOF
+}
+
+tune_cpu_profile() {
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}\n\nاول یک‌بار ستاپ رو انجام بده."
+    return 0
+  fi
+
+  ensure_service_can_reconfigure || return 1
+  choose_cpu_profile || return 1
+
+  # Update KCP mode (best-effort: first/only 'mode:' in config is under transport.kcp).
+  if grep -qE '^[[:space:]]*mode:[[:space:]]*' "${CONFIG_FILE}"; then
+    sed -i -E "s/^([[:space:]]*mode:[[:space:]]*)\"?[^\"#[:space:]]+\"?(.*)$/\\1\"${KCP_MODE}\"\\2/" "${CONFIG_FILE}" || true
+  fi
+
+  # Ensure pcap block exists (expected in configs generated by this UI).
+  if ! grep -qE '^[[:space:]]*pcap:[[:space:]]*$' "${CONFIG_FILE}"; then
+    msg "بلاک network.pcap داخل کانفیگ پیدا نشد.\n\nبرای اضافه‌شدن pcap tuning، بهتره یک‌بار ستاپ رو دوباره انجام بدی یا کانفیگ رو با UI بسازی."
+  else
+    # Update or insert pcap keys next to sockbuf.
+    if grep -qE '^[[:space:]]*snaplen:[[:space:]]*' "${CONFIG_FILE}"; then
+      sed -i -E "s/^([[:space:]]*snaplen:[[:space:]]*).*/\\1${PCAP_SNAPLEN}/" "${CONFIG_FILE}" || true
+    else
+      sed -i -E "/^[[:space:]]*sockbuf:[[:space:]]*/a\\
+    snaplen: ${PCAP_SNAPLEN}" "${CONFIG_FILE}" || true
+    fi
+
+    if grep -qE '^[[:space:]]*promisc:[[:space:]]*' "${CONFIG_FILE}"; then
+      sed -i -E "s/^([[:space:]]*promisc:[[:space:]]*).*/\\1${PCAP_PROMISC}/" "${CONFIG_FILE}" || true
+    else
+      sed -i -E "/^[[:space:]]*sockbuf:[[:space:]]*/a\\
+    promisc: ${PCAP_PROMISC}" "${CONFIG_FILE}" || true
+    fi
+
+    if grep -qE '^[[:space:]]*immediate:[[:space:]]*' "${CONFIG_FILE}"; then
+      sed -i -E "s/^([[:space:]]*immediate:[[:space:]]*).*/\\1${PCAP_IMMEDIATE}/" "${CONFIG_FILE}" || true
+    else
+      sed -i -E "/^[[:space:]]*sockbuf:[[:space:]]*/a\\
+    immediate: ${PCAP_IMMEDIATE}" "${CONFIG_FILE}" || true
+    fi
+
+    if grep -qE '^[[:space:]]*timeout_ms:[[:space:]]*' "${CONFIG_FILE}"; then
+      sed -i -E "s/^([[:space:]]*timeout_ms:[[:space:]]*).*/\\1${PCAP_TIMEOUT_MS}/" "${CONFIG_FILE}" || true
+    else
+      sed -i -E "/^[[:space:]]*sockbuf:[[:space:]]*/a\\
+    timeout_ms: ${PCAP_TIMEOUT_MS}" "${CONFIG_FILE}" || true
+    fi
+  fi
+
+  chmod 600 "${CONFIG_FILE}" || true
+  install_service
+  start_service
+
+  msg "✅ CPU profile اعمال شد.\n\nkcp.mode=${KCP_MODE}\npcap.immediate=${PCAP_IMMEDIATE}\npcap.timeout_ms=${PCAP_TIMEOUT_MS}\n\nاگر latency زیاد شد، Balanced را انتخاب کن."
 }
 
 setup_outside_server() {
@@ -666,19 +854,12 @@ setup_outside_server() {
   port="9999"
   port="$(ensure_tcp_port_free_or_prompt_simple "${port}" "Tunnel port (server)" )" || return 1
 
-  # debug/status port (pprof host)
-  local dbg_port
-  dbg_port="6060"
-  dbg_port="$(ensure_tcp_port_free_or_prompt_simple "${dbg_port}" "Debug/Status (pprof)" )" || return 1
+  choose_cpu_profile || return 1
 
   key="$("${BIN}" secret)"
 
   mkdir -p "${CONFIG_DIR}"
   gen_server_config "${iface}" "${ip}" "${mac}" "${port}" "${key}"
-  # If user picked non-default debug port, patch config.
-  if [[ "${dbg_port}" != "6060" ]]; then
-    sed -i -E "s/pprof: \"127\\.0\\.0\\.1:6060\"/pprof: \"127.0.0.1:${dbg_port}\"/" "${CONFIG_FILE}" || true
-  fi
   chmod 600 "${CONFIG_FILE}"
 
   write_sysctl_defaults
@@ -724,40 +905,41 @@ setup_inside_server() {
   socks_port="$(ensure_tcp_port_free_or_prompt_simple "${socks_port}" "SOCKS5" )" || return 1
   socks_listen="${socks_host}:${socks_port}"
 
-  # debug/status port (pprof host)
-  local dbg_port
-  dbg_port="6060"
-  dbg_port="$(ensure_tcp_port_free_or_prompt_simple "${dbg_port}" "Debug/Status (pprof)" )" || return 1
+  choose_cpu_profile || return 1
 
   user=""
   pass=""
-
   if [[ "${socks_host}" == "0.0.0.0" || "${socks_host}" == "[::]" ]]; then
-    msg "هشدار امنیتی:
-
-SOCKS5 روی 0.0.0.0 باز است و بدون یوزر/پسورد قابل سوءاستفاده است.
-
-برای ادامه باید یوزر/پسورد بگذاری (پیشنهاد: پسورد قوی)."
+    msg "هشدار امنیتی:\n\nSOCKS5 روی ${socks_host} بدون یوزر/پسورد می‌تونه open-proxy بشه.\nبرای امنیت، یوزر/پسورد اجباری است."
     while true; do
-      user="$(input "${APP}" "SOCKS5 Username:" "user")" || return 1
-      pass="$(password "${APP}" "SOCKS5 Password:" )" || return 1
-      if [[ -n "${user}" && -n "${pass}" ]]; then
+      user="$(input "${APP}" "Username (required):" "user")" || return 1
+      if [[ -n "${user}" ]]; then
         break
       fi
-      msg "یوزر/پسورد نمی‌تواند خالی باشد."
+      msg "Username نباید خالی باشد."
+    done
+    while true; do
+      pass="$(password "${APP}" "Password (required):" )" || return 1
+      if [[ -n "${pass}" ]]; then
+        break
+      fi
+      msg "Password نباید خالی باشد."
     done
   else
     if yesno "${APP}" "برای SOCKS5 یوزر/پسورد بگذاریم؟ (پیشنهادی)"; then
-      user="$(input "${APP}" "Username:" "user")" || return 1
-      pass="$(password "${APP}" "Password:" )" || return 1
+      while true; do
+        user="$(input "${APP}" "Username:" "user")" || return 1
+        pass="$(password "${APP}" "Password:" )" || return 1
+        if [[ -n "${user}" && -n "${pass}" ]]; then
+          break
+        fi
+        msg "برای فعال‌کردن auth باید هم username هم password پر باشند.\n\nاگر auth نمی‌خوای، No بزن."
+      done
     fi
   fi
 
   mkdir -p "${CONFIG_DIR}"
   gen_client_config "${iface}" "${ip}" "${mac}" "${remote}" "${port}" "${key}" "${socks_listen}" "${user}" "${pass}"
-  if [[ "${dbg_port}" != "6060" ]]; then
-    sed -i -E "s/pprof: \"127\\.0\\.0\\.1:6060\"/pprof: \"127.0.0.1:${dbg_port}\"/" "${CONFIG_FILE}" || true
-  fi
   chmod 600 "${CONFIG_FILE}"
 
   write_sysctl_defaults
@@ -774,6 +956,7 @@ main_loop() {
       "1" "ستاپ سرور خارج (Server)" \
       "2" "ستاپ سرور داخل (Client + SOCKS5)" \
       "12" "Enable VLESS relay (x-ui on outside, no panel inside)" \
+      "14" "CPU profile (optimize CPU settings)" \
       "3" "Status" \
       "4" "Logs" \
       "8" "Tunnel status (detailed)" \
@@ -782,13 +965,15 @@ main_loop() {
       "11" "SOCKS5 test (client)" \
       "5" "Restart service" \
       "6" "Stop service" \
-      "7" "Uninstall" \
+      "7" "Uninstall (keep binaries)" \
+      "13" "Purge (remove everything)" \
       "0" "Exit")" || exit 0
 
     case "${choice}" in
       1) setup_outside_server ;;
       2) setup_inside_server ;;
       12) enable_vless_relay_wizard ;;
+      14) tune_cpu_profile ;;
       3) status_screen ;;
       4) logs_screen ;;
       8) diag_text_screen ;;
@@ -798,6 +983,7 @@ main_loop() {
       5) systemctl restart "${SERVICE_NAME}" || msg "restart failed" ;;
       6) systemctl stop "${SERVICE_NAME}" || true ;;
       7) uninstall_all ;;
+      13) purge_all ;;
       0) exit 0 ;;
     esac
   done

@@ -21,13 +21,7 @@ type guardCookies struct {
 	cookies [][8]byte // cookies[0] is current window
 }
 
-// GuardConn wraps a net.PacketConn and prepends a small authenticated header to each packet.
-// It can cheaply drop random junk traffic BEFORE KCP decrypt/authentication runs.
-//
-// Header format: magic(4) + cookie(8) + kcpPacket(...)
-type GuardConn struct {
-	net.PacketConn
-
+type guardState struct {
 	magic         [4]byte
 	windowSeconds int64
 	skew          int
@@ -35,38 +29,70 @@ type GuardConn struct {
 	key [32]byte
 
 	state atomic.Value // stores *guardCookies
+}
+
+func newGuardState(k *conf.KCP) *guardState {
+	if k == nil || k.Guard == nil || !*k.Guard {
+		return nil
+	}
+	// Validation ensures these are sane, but keep this defensive.
+	if len(k.GuardMagic) != 4 || k.GuardWindow <= 0 || k.GuardSkew < 0 {
+		return nil
+	}
+	if len(k.Key) == 0 {
+		return nil
+	}
+
+	st := &guardState{
+		windowSeconds: int64(k.GuardWindow),
+		skew:          k.GuardSkew,
+	}
+	copy(st.magic[:], k.GuardMagic)
+
+	// Derive a dedicated key for guard cookies.
+	dk := pbkdf2.Key([]byte(k.Key), []byte("paqet_guard"), 100_000, 32, sha256.New)
+	copy(st.key[:], dk)
+
+	// Warm the cache so the first packet doesn't pay extra overhead.
+	st.getCookies()
+	return st
+}
+
+// GuardConn wraps a net.PacketConn and prepends a small authenticated header to each packet.
+// It can cheaply drop random junk traffic BEFORE KCP decrypt/authentication runs.
+//
+// Header format: magic(4) + cookie(8) + kcpPacket(...)
+type GuardConn struct {
+	net.PacketConn
+
+	st *guardState
 
 	bufPool sync.Pool // []byte, used for WriteTo
 }
 
 func NewGuardConn(pc net.PacketConn, k *conf.KCP) net.PacketConn {
-	if pc == nil || k == nil || k.Guard == nil || !*k.Guard {
+	if pc == nil {
 		return pc
 	}
-	// Validation ensures these are sane, but keep this defensive.
-	if len(k.GuardMagic) != 4 || k.GuardWindow <= 0 || k.GuardSkew < 0 {
-		return pc
-	}
-	if len(k.Key) == 0 {
+	st := newGuardState(k)
+	if st == nil {
 		return pc
 	}
 
+	// Fast-path: if we're using our own PacketConn implementation, install the guard
+	// in-place (no wrapper, no extra per-packet allocation/copy).
+	if c, ok := pc.(*PacketConn); ok {
+		c.setGuard(st)
+		return c
+	}
+
 	g := &GuardConn{
-		PacketConn:    pc,
-		windowSeconds: int64(k.GuardWindow),
-		skew:          k.GuardSkew,
+		PacketConn: pc,
+		st:         st,
 		bufPool: sync.Pool{
 			New: func() any { return make([]byte, 0, 2048) },
 		},
 	}
-	copy(g.magic[:], k.GuardMagic)
-
-	// Derive a dedicated key for guard cookies.
-	dk := pbkdf2.Key([]byte(k.Key), []byte("paqet_guard"), 100_000, 32, sha256.New)
-	copy(g.key[:], dk)
-
-	// Warm the cache so the first packet doesn't pay extra overhead.
-	g.getCookies()
 	return g
 }
 
@@ -81,12 +107,12 @@ func (g *GuardConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 			// Drop undersized packet.
 			continue
 		}
-		if !hmac.Equal(p[0:4], g.magic[:]) {
+		if !hmac.Equal(p[0:4], g.st.magic[:]) {
 			diag.AddGuardDrop()
 			continue
 		}
 
-		cookies := g.getCookies()
+		cookies := g.st.getCookies()
 		ok := false
 		for i := range cookies.cookies {
 			if hmac.Equal(p[4:12], cookies.cookies[i][:]) {
@@ -107,7 +133,7 @@ func (g *GuardConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 }
 
 func (g *GuardConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	cookies := g.getCookies()
+	cookies := g.st.getCookies()
 
 	buf := g.bufPool.Get().([]byte)
 	need := guardHeaderLen + len(p)
@@ -116,7 +142,7 @@ func (g *GuardConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	}
 	buf = buf[:need]
 
-	copy(buf[0:4], g.magic[:])
+	copy(buf[0:4], g.st.magic[:])
 	copy(buf[4:12], cookies.cookies[0][:])
 	copy(buf[guardHeaderLen:], p)
 
@@ -129,7 +155,7 @@ func (g *GuardConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	return len(p), nil
 }
 
-func (g *GuardConn) getCookies() *guardCookies {
+func (g *guardState) getCookies() *guardCookies {
 	nowWin := uint64(time.Now().Unix() / g.windowSeconds)
 	if v := g.state.Load(); v != nil {
 		c := v.(*guardCookies)
@@ -149,7 +175,7 @@ func (g *GuardConn) getCookies() *guardCookies {
 	return out
 }
 
-func (g *GuardConn) cookie(win uint64) [8]byte {
+func (g *guardState) cookie(win uint64) [8]byte {
 	var winb [8]byte
 	binary.BigEndian.PutUint64(winb[:], win)
 

@@ -10,6 +10,13 @@ import (
 
 var startTime = time.Now()
 
+// enabled controls whether diag counters are active.
+// Keep this false in production unless you need /debug/paqet/* endpoints or counters.
+var enabled bool
+
+func Enable(v bool) { enabled = v }
+func Enabled() bool { return enabled }
+
 type ConfigInfo struct {
 	Role      string `json:"role,omitempty"`
 	Interface string `json:"interface,omitempty"`
@@ -91,16 +98,42 @@ type Status struct {
 }
 
 func SetConfig(info ConfigInfo) {
+	if !enabled {
+		return
+	}
 	cfg.Store(&info)
 }
 
-func IncSessions() { sessions.Add(1) }
-func DecSessions() { sessions.Add(-1) }
+func IncSessions() {
+	if !enabled {
+		return
+	}
+	sessions.Add(1)
+}
+func DecSessions() {
+	if !enabled {
+		return
+	}
+	sessions.Add(-1)
+}
 
-func IncStreams() { streams.Add(1) }
-func DecStreams() { streams.Add(-1) }
+func IncStreams() {
+	if !enabled {
+		return
+	}
+	streams.Add(1)
+}
+func DecStreams() {
+	if !enabled {
+		return
+	}
+	streams.Add(-1)
+}
 
 func AddRawUp(n int) {
+	if !enabled {
+		return
+	}
 	if n > 0 {
 		rawUpPackets.Add(1)
 		rawUpBytes.Add(uint64(n))
@@ -109,6 +142,9 @@ func AddRawUp(n int) {
 }
 
 func AddRawDown(n int) {
+	if !enabled {
+		return
+	}
 	if n > 0 {
 		rawDownPackets.Add(1)
 		rawDownBytes.Add(uint64(n))
@@ -116,31 +152,56 @@ func AddRawDown(n int) {
 	}
 }
 
-func AddGuardPass() { guardPass.Add(1) }
-func AddGuardDrop() { guardDrops.Add(1) }
+func AddGuardPass() {
+	if !enabled {
+		return
+	}
+	guardPass.Add(1)
+}
+func AddGuardDrop() {
+	if !enabled {
+		return
+	}
+	guardDrops.Add(1)
+}
 
 func AddTCPUp(n int64) {
+	if !enabled {
+		return
+	}
 	if n > 0 {
 		tcpUpBytes.Add(uint64(n))
 	}
 }
 func AddTCPDown(n int64) {
+	if !enabled {
+		return
+	}
 	if n > 0 {
 		tcpDownBytes.Add(uint64(n))
 	}
 }
 func AddUDPUp(n int64) {
+	if !enabled {
+		return
+	}
 	if n > 0 {
 		udpUpBytes.Add(uint64(n))
 	}
 }
 func AddUDPDown(n int64) {
+	if !enabled {
+		return
+	}
 	if n > 0 {
 		udpDownBytes.Add(uint64(n))
 	}
 }
 
 func SetPing(rtt time.Duration, err error) {
+	if !enabled {
+		return
+	}
 	now := time.Now()
 	pingLastAt.Store(now.UnixNano())
 	pingLastRTT.Store(int64(rtt))

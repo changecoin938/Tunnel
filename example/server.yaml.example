@@ -44,7 +44,7 @@ transport:
   
   # KCP protocol settings
   kcp:
-       mode: "fast"            # KCP mode: normal, fast, fast2, fast3, manual
+    mode: "fast"            # KCP mode: normal, fast, fast2, fast3, manual
 
     # Manual mode parameters (only used when mode="manual")
     # nodelay: 1              # 0=disable, 1=enable

@@ -81,6 +81,7 @@ jobs:
                     install.sh \
                     scripts/paqet-ui \
                     scripts/paqet-iptables.sh \
+                    scripts/paqet-systemd-iptables.sh \
                     example/client.yaml.example \
                     example/server.yaml.example
 

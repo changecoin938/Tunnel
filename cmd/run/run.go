@@ -41,31 +41,34 @@ var Cmd = &cobra.Command{
 
 func initialize(cfg *conf.Conf) {
 	flog.SetLevel(cfg.Log.Level)
+	diag.Enable(cfg.Debug.Diag)
 	guard := false
 	if cfg.Transport.KCP != nil && cfg.Transport.KCP.Guard != nil && *cfg.Transport.KCP.Guard {
 		guard = true
 	}
-	diag.SetConfig(diag.ConfigInfo{
-		Role:      cfg.Role,
-		Interface: cfg.Network.Interface_,
-		IPv4Addr:  cfg.Network.IPv4.Addr_,
-		IPv6Addr:  cfg.Network.IPv6.Addr_,
-		ServerAddr: func() string {
-			if cfg.Role == "client" {
-				return cfg.Server.Addr_
-			}
-			return ""
-		}(),
-		ListenAddr: func() string {
-			if cfg.Role == "server" {
-				return cfg.Listen.Addr_
-			}
-			return ""
-		}(),
-		Pprof: cfg.Debug.Pprof,
-		Guard: guard,
-		Conns: cfg.Transport.Conn,
-	})
-	diag.RegisterHTTP()
+	if cfg.Debug.Diag {
+		diag.SetConfig(diag.ConfigInfo{
+			Role:      cfg.Role,
+			Interface: cfg.Network.Interface_,
+			IPv4Addr:  cfg.Network.IPv4.Addr_,
+			IPv6Addr:  cfg.Network.IPv6.Addr_,
+			ServerAddr: func() string {
+				if cfg.Role == "client" {
+					return cfg.Server.Addr_
+				}
+				return ""
+			}(),
+			ListenAddr: func() string {
+				if cfg.Role == "server" {
+					return cfg.Listen.Addr_
+				}
+				return ""
+			}(),
+			Pprof: cfg.Debug.Pprof,
+			Guard: guard,
+			Conns: cfg.Transport.Conn,
+		})
+		diag.RegisterHTTP()
+	}
 	startPprof(cfg.Debug.Pprof)
 }
