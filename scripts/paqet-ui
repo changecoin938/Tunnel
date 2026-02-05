@@ -39,6 +39,26 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 SYSCTL_CONF="/etc/sysctl.d/99-paqet.conf"
 
+# rand_alnum prints a random alphanumeric string of length N (default 24).
+rand_alnum() {
+  local n="${1:-24}"
+  if [[ -r /dev/urandom ]]; then
+    LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${n}"
+    return 0
+  fi
+  # Fallback (should be rare).
+  date +%s%N | tr -dc '0-9' | head -c "${n}"
+}
+
+# yaml_quote returns a safely single-quoted YAML scalar.
+yaml_quote() {
+  local s="${1-}"
+  s="${s//$'\r'/}"
+  s="${s//$'\n'/}"
+  s="${s//\'/\'\'}"
+  printf "'%s'" "${s}"
+}
+
 # CPU profile defaults (balanced). These are embedded in generated configs.
 KCP_MODE="fast"
 PCAP_SNAPLEN="2048"
@@ -679,6 +699,8 @@ purge_all() {
 
 gen_server_config() {
   local iface="$1" ip="$2" router_mac="$3" port="$4" key="$5"
+  local key_q
+  key_q="$(yaml_quote "${key}")"
   cat >"${CONFIG_FILE}" <<EOF
 role: "server"
 
@@ -709,7 +731,7 @@ transport:
     rcvwnd: 8192
     sndwnd: 8192
     block: "aes"
-    key: "${key}"
+    key: ${key_q}
     guard: true
     guard_magic: "PQT1"
     guard_window: 30
@@ -725,6 +747,10 @@ EOF
 
 gen_client_config() {
   local iface="$1" ip="$2" router_mac="$3" remote_ip="$4" port="$5" key="$6" socks_listen="$7" user="$8" pass="$9"
+  local key_q user_q pass_q
+  key_q="$(yaml_quote "${key}")"
+  user_q="$(yaml_quote "${user}")"
+  pass_q="$(yaml_quote "${pass}")"
   cat >"${CONFIG_FILE}" <<EOF
 role: "client"
 
@@ -733,8 +759,8 @@ log:
 
 socks5:
   - listen: "${socks_listen}"
-    username: "${user}"
-    password: "${pass}"
+    username: ${user_q}
+    password: ${pass_q}
 
 network:
   interface: "${iface}"
@@ -760,7 +786,7 @@ transport:
     rcvwnd: 4096
     sndwnd: 4096
     block: "aes"
-    key: "${key}"
+    key: ${key_q}
     guard: true
     guard_magic: "PQT1"
     guard_window: 30
@@ -898,7 +924,7 @@ setup_inside_server() {
   key="$(password "${APP}" "کلید Pairing که روی سرور خارج نمایش داده شد را وارد کن")" || return 1
 
   socks_host="127.0.0.1"
-  if yesno "${APP}" "SOCKS5 روی 0.0.0.0:1080 باز شود؟ (خطرناک: اگر بدون یوزر/پسورد باشد open-proxy می‌شود)"; then
+  if yesno "${APP}" "SOCKS5 روی 0.0.0.0:1080 باز شود؟\n\nاگر Yes بزنی، برای امنیت یوزر/پسورد به‌صورت خودکار ست می‌شود."; then
     socks_host="0.0.0.0"
   fi
   socks_port="1080"
@@ -910,21 +936,9 @@ setup_inside_server() {
   user=""
   pass=""
   if [[ "${socks_host}" == "0.0.0.0" || "${socks_host}" == "[::]" ]]; then
-    msg "هشدار امنیتی:\n\nSOCKS5 روی ${socks_host} بدون یوزر/پسورد می‌تونه open-proxy بشه.\nبرای امنیت، یوزر/پسورد اجباری است."
-    while true; do
-      user="$(input "${APP}" "Username (required):" "user")" || return 1
-      if [[ -n "${user}" ]]; then
-        break
-      fi
-      msg "Username نباید خالی باشد."
-    done
-    while true; do
-      pass="$(password "${APP}" "Password (required):" )" || return 1
-      if [[ -n "${pass}" ]]; then
-        break
-      fi
-      msg "Password نباید خالی باشد."
-    done
+    # Mandatory auth for non-loopback binds: auto-generate safe creds to avoid UX bugs/misconfig.
+    user="user"
+    pass="$(rand_alnum 28)"
   else
     if yesno "${APP}" "برای SOCKS5 یوزر/پسورد بگذاریم؟ (پیشنهادی)"; then
       while true; do
@@ -946,7 +960,11 @@ setup_inside_server() {
   install_service
   start_service
 
-  msg "سرور داخل (کلاینت) ستاپ شد.\n\nSOCKS5: ${socks_listen}\nخارج: ${remote}:${port}"
+  if [[ -n "${user}" && -n "${pass}" ]]; then
+    msg "سرور داخل (کلاینت) ستاپ شد.\n\nSOCKS5: ${socks_listen}\nSOCKS Auth:\n  user: ${user}\n  pass: ${pass}\n\nخارج: ${remote}:${port}"
+  else
+    msg "سرور داخل (کلاینت) ستاپ شد.\n\nSOCKS5: ${socks_listen}\nخارج: ${remote}:${port}"
+  fi
 }
 
 main_loop() {
