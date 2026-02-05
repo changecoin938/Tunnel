@@ -401,162 +401,6 @@ status_screen() {
   printf "%b\n" "${out}" | textbox "${APP} status" 22 78
 }
 
-logs_screen() {
-  local out
-  out="$(journalctl -u "${SERVICE_NAME}" -n 200 --no-pager --output=short-iso 2>&1 || true)"
-  if [[ -z "${out}" ]]; then
-    out="(no logs)\n\nTry: journalctl -u ${SERVICE_NAME} -n 200 --no-pager"
-  fi
-  printf "%b\n" "${out}" | textbox "${APP} logs (last 200)" 22 78
-}
-
-get_pprof_addr_from_config() {
-  if [[ -f "${CONFIG_FILE}" ]]; then
-    local a
-    a="$(grep -E '^[[:space:]]*pprof:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*pprof:[[:space:]]*\"?([^\"[:space:]]+)\"?.*$/\\1/')"
-    if [[ -n "${a}" ]]; then
-      printf "%s" "${a}"
-      return 0
-    fi
-  fi
-  printf "%s" "127.0.0.1:6060"
-}
-
-diag_text_fetch() {
-  local addr
-  addr="$(get_pprof_addr_from_config)"
-  curl --noproxy "*" -fsS --max-time 2 "http://${addr}/debug/paqet/text" 2>&1
-}
-
-diag_text_screen() {
-  local out
-  out="$(diag_text_fetch || true)"
-  if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404|url rejected|bad hostname'; then
-    out="${out}\n\nNOTE: detailed tunnel status needs debug enabled and paqet restarted.\nConfig:\n  debug:\n    pprof: \"127.0.0.1:6060\"\n    diag: true"
-  fi
-  printf "%b\n" "${out}" | textbox "${APP} tunnel status (detailed)" 22 78
-}
-
-diag_json_fetch() {
-  local addr
-  addr="$(get_pprof_addr_from_config)"
-  curl --noproxy "*" -fsS --max-time 2 "http://${addr}/debug/paqet/status" 2>&1
-}
-
-diag_json_screen() {
-  local out
-  out="$(diag_json_fetch || true)"
-  if echo "${out}" | grep -qiE 'connection refused|failed to connect|could not resolve|404|url rejected|bad hostname'; then
-    out="${out}\n\nNOTE: JSON status needs debug enabled and paqet restarted.\nConfig:\n  debug:\n    pprof: \"127.0.0.1:6060\"\n    diag: true"
-  fi
-  printf "%b\n" "${out}" | textbox "${APP} tunnel status (json)" 22 78
-}
-
-get_role_from_config() {
-  if [[ -f "${CONFIG_FILE}" ]]; then
-    grep -E '^[[:space:]]*role:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*role:[[:space:]]*\"?([^\"[:space:]]+)\"?.*$/\\1/'
-  fi
-}
-
-get_socks_listen_from_config() {
-  [[ -f "${CONFIG_FILE}" ]] || return 0
-  # Parse first socks5 item:
-  #   socks5:
-  #     - listen: "HOST:PORT"
-  awk '
-    BEGIN { in_socks=0 }
-    /^[[:space:]]*socks5:[[:space:]]*$/ { in_socks=1; next }
-    in_socks && /^[^[:space:]][^:]*:/ { in_socks=0 }
-    in_socks && /^[[:space:]]*-[[:space:]]*listen:[[:space:]]*/ {
-      line=$0
-      sub(/^[[:space:]]*-[[:space:]]*listen:[[:space:]]*/, "", line)
-      sub(/[[:space:]]+#.*/, "", line)
-      gsub(/^"/, "", line); gsub(/"$/, "", line)
-      print line
-      exit
-    }
-  ' "${CONFIG_FILE}"
-}
-
-get_socks_user_from_config() {
-  [[ -f "${CONFIG_FILE}" ]] || return 0
-  awk '
-    BEGIN { in_socks=0; item=0 }
-    /^[[:space:]]*socks5:[[:space:]]*$/ { in_socks=1; next }
-    in_socks && /^[^[:space:]][^:]*:/ { in_socks=0 }
-    in_socks {
-      if ($0 ~ /^[[:space:]]*-[[:space:]]*listen:[[:space:]]*/) { item++; next }
-      if (item==1 && $0 ~ /^[[:space:]]*username:[[:space:]]*/) {
-        line=$0
-        sub(/^[[:space:]]*username:[[:space:]]*/, "", line)
-        sub(/[[:space:]]+#.*/, "", line)
-        gsub(/^"/, "", line); gsub(/"$/, "", line)
-        print line
-        exit
-      }
-      if (item>1) exit
-    }
-  ' "${CONFIG_FILE}"
-}
-
-get_socks_pass_from_config() {
-  [[ -f "${CONFIG_FILE}" ]] || return 0
-  awk '
-    BEGIN { in_socks=0; item=0 }
-    /^[[:space:]]*socks5:[[:space:]]*$/ { in_socks=1; next }
-    in_socks && /^[^[:space:]][^:]*:/ { in_socks=0 }
-    in_socks {
-      if ($0 ~ /^[[:space:]]*-[[:space:]]*listen:[[:space:]]*/) { item++; next }
-      if (item==1 && $0 ~ /^[[:space:]]*password:[[:space:]]*/) {
-        line=$0
-        sub(/^[[:space:]]*password:[[:space:]]*/, "", line)
-        sub(/[[:space:]]+#.*/, "", line)
-        gsub(/^"/, "", line); gsub(/"$/, "", line)
-        print line
-        exit
-      }
-      if (item>1) exit
-    }
-  ' "${CONFIG_FILE}"
-}
-
-get_socks_user_from_config() {
-  if [[ -f "${CONFIG_FILE}" ]]; then
-    grep -E '^[[:space:]]*username:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*username:[[:space:]]*"?([^"[:space:]]*)"?.*$/\1/'
-  fi
-}
-
-get_socks_pass_from_config() {
-  if [[ -f "${CONFIG_FILE}" ]]; then
-    grep -E '^[[:space:]]*password:[[:space:]]*' "${CONFIG_FILE}" | head -n1 | sed -E 's/^[[:space:]]*password:[[:space:]]*"?([^"[:space:]]*)"?.*$/\1/'
-  fi
-}
-
-has_forward_section() {
-  [[ -f "${CONFIG_FILE}" ]] && grep -qE '^[[:space:]]*forward:[[:space:]]*$' "${CONFIG_FILE}"
-}
-
-remove_socks_section() {
-  # Remove the entire top-level "socks5:" block (if present).
-  # Useful for "X-UI only" deployments where SOCKS is not needed and should not listen.
-  [[ -f "${CONFIG_FILE}" ]] || return 0
-  local tmp
-  tmp="$(mktemp)"
-
-  awk '
-    BEGIN { in_s=0 }
-    # Start of socks block
-    /^[[:space:]]*socks5:[[:space:]]*$/ { in_s=1; next }
-    # End of socks block when next top-level key starts (non-indented)
-    in_s && /^[^[:space:]][^:]*:/ { in_s=0 }
-    # Print lines when not inside socks block
-    !in_s { print $0 }
-  ' "${CONFIG_FILE}" >"${tmp}"
-
-  mv "${tmp}" "${CONFIG_FILE}"
-  chmod 600 "${CONFIG_FILE}" || true
-}
-
 set_forward_single_rule() {
   # Replace the entire top-level "forward:" block with a single TCP rule.
   # This keeps the setup predictable and avoids duplicate YAML keys.
@@ -584,115 +428,6 @@ EOF
 
   mv "${tmp}" "${CONFIG_FILE}"
   chmod 600 "${CONFIG_FILE}" || true
-}
-
-enable_vless_relay_wizard() {
-  # This is the "no manual editing" path to use Xray/V2Ray (VLESS) behind paqet:
-  # - Outside (server) runs Xray inbound on 127.0.0.1:<xray_port>
-  # - Inside (client) listens on 0.0.0.0:<public_port> and forwards through tunnel to 127.0.0.1:<xray_port> (server-side)
-  local role public_port xray_port listen_addr target_addr
-
-  role="$(get_role_from_config || true)"
-  if [[ "${role}" != "client" ]]; then
-    msg "این گزینه فقط روی سرور داخل (client) کار می‌کنه.\n\nروی سرور خارج لازم نیست چیزی انجام بدی جز ساخت inbound در x-ui."
-    return 0
-  fi
-  if [[ ! -f "${CONFIG_FILE}" ]]; then
-    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}\n\nاول گزینه «ستاپ سرور داخل» رو اجرا کن."
-    return 0
-  fi
-
-  ensure_service_can_reconfigure || return 1
-
-  # Portless UX: fixed defaults. Only prompts if port is busy.
-  public_port="443"
-  public_port="$(ensure_tcp_port_free_or_prompt "${public_port}" "VLESS entrypoint (inside)" )" || return 1
-
-  xray_port="2443"
-
-  listen_addr="0.0.0.0:${public_port}"
-  target_addr="127.0.0.1:${xray_port}"
-
-  # X-UI only means no SOCKS should remain listening (avoid confusion + attack surface).
-  remove_socks_section
-  set_forward_single_rule "${listen_addr}" "${target_addr}"
-
-  install_service
-  start_service
-
-  msg "✅ X-UI Relay فعال شد.\n\n- روی سرور داخل: SOCKS حذف شد و فقط این forward فعال است:\n  ${listen_addr}  ->  ${target_addr}\n\n- روی سرور خارج در x-ui یک inbound بساز:\n  VLESS / TCP\n  listen: 127.0.0.1\n  port:   ${xray_port}\n\nبعد روی کلاینت‌ها:\n  address = IP ایران\n  port    = ${public_port}\n  uuid/flow/... = همون x-ui"
-}
-
-socks_test_screen() {
-  local role socks user pass out
-  role="$(get_role_from_config || true)"
-  if [[ "${role}" != "client" ]]; then
-    msg "این گزینه فقط برای سرور داخل (client) است."
-    return 0
-  fi
-  socks="$(get_socks_listen_from_config || true)"
-  if [[ -z "${socks}" ]]; then
-    socks="127.0.0.1:1080"
-  fi
-  user="$(get_socks_user_from_config || true)"
-  pass="$(get_socks_pass_from_config || true)"
-
-  # If SOCKS listens on a wildcard address, use loopback for the local test.
-  case "${socks}" in
-    0.0.0.0:*) socks="127.0.0.1:${socks#0.0.0.0:}" ;;
-    [::]:*) socks="[::1]:${socks#[::]:}" ;;
-  esac
-
-  local -a curl_proxy_args
-  curl_proxy_args=(--proxy "socks5h://${socks}")
-  if [[ -n "${user}" && -n "${pass}" ]]; then
-    curl_proxy_args+=(--proxy-user "${user}:${pass}")
-  fi
-
-  out="$(curl -fsS -o /dev/null --max-time 15 \
-    "${curl_proxy_args[@]}" \
-    -w "proxy=${socks}\nhttp_code=%{http_code}\ntime_total=%{time_total}s\n" \
-    https://www.gstatic.com/generate_204 2>&1 || true)"
-
-  if echo "${out}" | grep -qiE 'failed|refused|timeout|could not|error'; then
-    out="${out}\n\nTip: مطمئن شو SOCKS5 روی همین سرور بالا هست: ss -lntp | grep 1080"
-  fi
-  printf "%b\n" "${out}" | textbox "${APP} SOCKS5 test" 18 78
-}
-
-extract_bytes_line() {
-  # input: diag text
-  # output: "up down" or empty
-  sed -nE 's/^  bytes: up=([0-9]+)  down=([0-9]+)$/\\1 \\2/p' | head -n1
-}
-
-throughput_screen() {
-  local a b up1 down1 up2 down2 d_up d_down out
-  a="$(diag_text_fetch || true)"
-  if [[ -z "${a}" ]]; then
-    msg "Could not fetch diagnostics. Is paqet running and debug.pprof enabled?"
-    return 0
-  fi
-  if ! read -r up1 down1 < <(printf "%s\n" "${a}" | extract_bytes_line || true); then
-    msg "Failed to parse counters. (Try Detailed Status first.)"
-    return 0
-  fi
-  sleep 1
-  b="$(diag_text_fetch || true)"
-  if ! read -r up2 down2 < <(printf "%s\n" "${b}" | extract_bytes_line || true); then
-    msg "Failed to parse counters. (Try Detailed Status first.)"
-    return 0
-  fi
-
-  if [[ -z "${up1:-}" || -z "${down1:-}" || -z "${up2:-}" || -z "${down2:-}" ]]; then
-    msg "Failed to parse counters. (Try Detailed Status first.)"
-    return 0
-  fi
-
-  d_up=$((up2-up1))
-  d_down=$((down2-down1))
-  out="Estimated throughput (1s sample)\n\n  up:   ${d_up} B/s\n  down: ${d_down} B/s\n\n(Values are tunnel payload bytes since start; sample uses /debug/paqet/text)"
-  msg "${out}"
 }
 
 uninstall_all() {
@@ -793,58 +528,6 @@ transport:
 EOF
 }
 
-gen_client_config() {
-  local iface="$1" ip="$2" router_mac="$3" local_port="$4" remote_ip="$5" port="$6" key="$7" socks_listen="$8" user="$9" pass="${10}"
-  local key_q user_q pass_q
-  key_q="$(yaml_quote "${key}")"
-  user_q="$(yaml_quote "${user}")"
-  pass_q="$(yaml_quote "${pass}")"
-  cat >"${CONFIG_FILE}" <<EOF
-role: "client"
-
-log:
-  level: "info"
-
-socks5:
-  - listen: "${socks_listen}"
-    username: ${user_q}
-    password: ${pass_q}
-
-network:
-  interface: "${iface}"
-  ipv4:
-    addr: "${ip}:${local_port}"
-    router_mac: "${router_mac}"
-  pcap:
-    sockbuf: 16777216
-    snaplen: ${PCAP_SNAPLEN}
-    promisc: ${PCAP_PROMISC}
-    immediate: ${PCAP_IMMEDIATE}
-    timeout_ms: ${PCAP_TIMEOUT_MS}
-
-server:
-  addr: "${remote_ip}:${port}"
-
-transport:
-  protocol: "kcp"
-  conn: 1
-  kcp:
-    mode: "${KCP_MODE}"
-    mtu: ${KCP_MTU}
-    rcvwnd: 4096
-    sndwnd: 4096
-    block: "aes"
-    key: ${key_q}
-    guard: true
-    guard_magic: "PQT1"
-    guard_window: 30
-    guard_skew: 1
-    header_timeout: 10
-    smuxbuf: 16777216
-    streambuf: 4194304
-EOF
-}
-
 gen_client_config_no_socks() {
   # X-UI only mode: do not generate a SOCKS listener at all.
   local iface="$1" ip="$2" router_mac="$3" local_port="$4" remote_ip="$5" port="$6" key="$7"
@@ -891,65 +574,6 @@ transport:
 EOF
 }
 
-tune_cpu_profile() {
-  if [[ ! -f "${CONFIG_FILE}" ]]; then
-    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}\n\nاول یک‌بار ستاپ رو انجام بده."
-    return 0
-  fi
-
-  ensure_service_can_reconfigure || return 1
-  choose_cpu_profile || return 1
-
-  # Update KCP mode (best-effort: first/only 'mode:' in config is under transport.kcp).
-  if grep -qE '^[[:space:]]*mode:[[:space:]]*' "${CONFIG_FILE}"; then
-    sed -i -E "s/^([[:space:]]*mode:[[:space:]]*)\"?[^\"#[:space:]]+\"?(.*)$/\\1\"${KCP_MODE}\"\\2/" "${CONFIG_FILE}" || true
-  fi
-  # Update KCP MTU (same block).
-  if grep -qE '^[[:space:]]*mtu:[[:space:]]*' "${CONFIG_FILE}"; then
-    sed -i -E "s/^([[:space:]]*mtu:[[:space:]]*).*/\\1${KCP_MTU}/" "${CONFIG_FILE}" || true
-  fi
-
-  # Ensure pcap block exists (expected in configs generated by this UI).
-  if ! grep -qE '^[[:space:]]*pcap:[[:space:]]*$' "${CONFIG_FILE}"; then
-    msg "بلاک network.pcap داخل کانفیگ پیدا نشد.\n\nبرای اضافه‌شدن pcap tuning، بهتره یک‌بار ستاپ رو دوباره انجام بدی یا کانفیگ رو با UI بسازی."
-  else
-    # Update or insert pcap keys next to sockbuf.
-    if grep -qE '^[[:space:]]*snaplen:[[:space:]]*' "${CONFIG_FILE}"; then
-      sed -i -E "s/^([[:space:]]*snaplen:[[:space:]]*).*/\\1${PCAP_SNAPLEN}/" "${CONFIG_FILE}" || true
-    else
-      sed -i -E "/^[[:space:]]*sockbuf:[[:space:]]*/a\\
-    snaplen: ${PCAP_SNAPLEN}" "${CONFIG_FILE}" || true
-    fi
-
-    if grep -qE '^[[:space:]]*promisc:[[:space:]]*' "${CONFIG_FILE}"; then
-      sed -i -E "s/^([[:space:]]*promisc:[[:space:]]*).*/\\1${PCAP_PROMISC}/" "${CONFIG_FILE}" || true
-    else
-      sed -i -E "/^[[:space:]]*sockbuf:[[:space:]]*/a\\
-    promisc: ${PCAP_PROMISC}" "${CONFIG_FILE}" || true
-    fi
-
-    if grep -qE '^[[:space:]]*immediate:[[:space:]]*' "${CONFIG_FILE}"; then
-      sed -i -E "s/^([[:space:]]*immediate:[[:space:]]*).*/\\1${PCAP_IMMEDIATE}/" "${CONFIG_FILE}" || true
-    else
-      sed -i -E "/^[[:space:]]*sockbuf:[[:space:]]*/a\\
-    immediate: ${PCAP_IMMEDIATE}" "${CONFIG_FILE}" || true
-    fi
-
-    if grep -qE '^[[:space:]]*timeout_ms:[[:space:]]*' "${CONFIG_FILE}"; then
-      sed -i -E "s/^([[:space:]]*timeout_ms:[[:space:]]*).*/\\1${PCAP_TIMEOUT_MS}/" "${CONFIG_FILE}" || true
-    else
-      sed -i -E "/^[[:space:]]*sockbuf:[[:space:]]*/a\\
-    timeout_ms: ${PCAP_TIMEOUT_MS}" "${CONFIG_FILE}" || true
-    fi
-  fi
-
-  chmod 600 "${CONFIG_FILE}" || true
-  install_service
-  start_service
-
-  msg "✅ CPU profile اعمال شد.\n\nkcp.mode=${KCP_MODE}\nkcp.mtu=${KCP_MTU}\npcap.immediate=${PCAP_IMMEDIATE}\npcap.timeout_ms=${PCAP_TIMEOUT_MS}\n\nاگر latency زیاد شد، Balanced را انتخاب کن."
-}
-
 setup_outside_server() {
   local iface ip gw mac port key
   ensure_service_can_reconfigure || return 1
@@ -991,80 +615,6 @@ setup_outside_server() {
   start_service
 
   msg "سرور خارج ستاپ شد.\n\nکلید Pairing (این را به سرور داخل بده):\n${key}\n\nStatus از منو قابل مشاهده است."
-}
-
-setup_inside_server() {
-  local iface ip gw mac port remote key socks_host socks_port socks_listen user pass local_port
-  ensure_service_can_reconfigure || return 1
-  iface="$(detect_default_iface || true)"
-  if [[ -z "${iface}" ]]; then
-    msg "نتونستم اینترفیس پیش‌فرض رو پیدا کنم."
-    return 1
-  fi
-  ip="$(detect_local_ipv4 "${iface}" || true)"
-  if [[ -z "${ip}" ]]; then
-    msg "نتونستم IPv4 روی ${iface} پیدا کنم."
-    return 1
-  fi
-  gw="$(detect_gateway_ipv4 || true)"
-  if [[ -z "${gw}" ]]; then
-    msg "نتونستم gateway پیش‌فرض رو پیدا کنم."
-    return 1
-  fi
-  mac="$(ensure_gateway_mac "${gw}" "${iface}" || true)"
-  if [[ -z "${mac}" ]]; then
-    msg "نتونستم MAC روتر (gateway) رو پیدا کنم. لطفاً gateway رو ping کنید و دوباره تلاش کنید."
-    return 1
-  fi
-
-  remote="$(input "${APP}" "IP سرور خارج؟ (مثال: 1.2.3.4)" "")" || return 1
-  port="9999"
-  key="$(password "${APP}" "کلید Pairing که روی سرور خارج نمایش داده شد را وارد کن")" || return 1
-
-  socks_host="127.0.0.1"
-  if yesno "${APP}" "SOCKS5 روی 0.0.0.0:1080 باز شود؟\n\nاگر Yes بزنی، برای امنیت یوزر/پسورد به‌صورت خودکار ست می‌شود."; then
-    socks_host="0.0.0.0"
-  fi
-  socks_port="1080"
-  socks_port="$(ensure_tcp_port_free_or_prompt_simple "${socks_port}" "SOCKS5" )" || return 1
-  socks_listen="${socks_host}:${socks_port}"
-
-  choose_cpu_profile || return 1
-
-  local_port="$(pick_client_raw_port)"
-
-  user=""
-  pass=""
-  if [[ "${socks_host}" == "0.0.0.0" || "${socks_host}" == "[::]" ]]; then
-    # Mandatory auth for non-loopback binds: auto-generate safe creds to avoid UX bugs/misconfig.
-    user="user"
-    pass="$(rand_alnum 28)"
-  else
-    if yesno "${APP}" "برای SOCKS5 یوزر/پسورد بگذاریم؟ (پیشنهادی)"; then
-      while true; do
-        user="$(input "${APP}" "Username:" "user")" || return 1
-        pass="$(password "${APP}" "Password:" )" || return 1
-        if [[ -n "${user}" && -n "${pass}" ]]; then
-          break
-        fi
-        msg "برای فعال‌کردن auth باید هم username هم password پر باشند.\n\nاگر auth نمی‌خوای، No بزن."
-      done
-    fi
-  fi
-
-  mkdir -p "${CONFIG_DIR}"
-  gen_client_config "${iface}" "${ip}" "${mac}" "${local_port}" "${remote}" "${port}" "${key}" "${socks_listen}" "${user}" "${pass}"
-  chmod 600 "${CONFIG_FILE}"
-
-  write_sysctl_defaults
-  install_service
-  start_service
-
-  if [[ -n "${user}" && -n "${pass}" ]]; then
-    msg "سرور داخل (کلاینت) ستاپ شد.\n\nSOCKS5: ${socks_listen}\nSOCKS Auth:\n  user: ${user}\n  pass: ${pass}\n\nخارج: ${remote}:${port}"
-  else
-    msg "سرور داخل (کلاینت) ستاپ شد.\n\nSOCKS5: ${socks_listen}\nخارج: ${remote}:${port}"
-  fi
 }
 
 setup_inside_xui_only() {
@@ -1125,17 +675,8 @@ main_loop() {
     local choice
     choice="$(menu "${APP}" "یک گزینه را انتخاب کن:" \
       "1" "ستاپ سرور خارج (Server)" \
-      "2" "ستاپ سرور داخل (Client + SOCKS5)" \
-      "12" "Enable X-UI relay (Forward 443 -> 127.0.0.1:2443, disables SOCKS)" \
       "15" "Setup inside (X-UI only, one-step, no SOCKS)" \
-      "14" "CPU profile (optimize CPU settings)" \
       "3" "Status" \
-      "4" "Logs" \
-      "8" "Tunnel status (detailed)" \
-      "9" "Traffic rate (1s sample)" \
-      "10" "Tunnel status (json)" \
-      "11" "SOCKS5 test (client)" \
-      "5" "Restart service" \
       "6" "Stop service" \
       "7" "Uninstall (keep binaries)" \
       "13" "Purge (remove everything)" \
@@ -1143,17 +684,8 @@ main_loop() {
 
     case "${choice}" in
       1) setup_outside_server ;;
-      2) setup_inside_server ;;
-      12) enable_vless_relay_wizard ;;
       15) setup_inside_xui_only ;;
-      14) tune_cpu_profile ;;
       3) status_screen ;;
-      4) logs_screen ;;
-      8) diag_text_screen ;;
-      9) throughput_screen ;;
-      10) diag_json_screen ;;
-      11) socks_test_screen ;;
-      5) systemctl restart "${SERVICE_NAME}" || msg "restart failed" ;;
       6) systemctl stop "${SERVICE_NAME}" || true ;;
       7) uninstall_all ;;
       13) purge_all ;;
