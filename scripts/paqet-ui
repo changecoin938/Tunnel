@@ -72,6 +72,26 @@ PCAP_TIMEOUT_MS="0"
 # (RST-drop / NOTRACK) to be applied reliably by systemd helper scripts.
 CLIENT_RAW_PORT_DEFAULT="20000"
 
+pick_client_conn() {
+  # Choose a reasonable default number of parallel KCP sessions for higher throughput.
+  # More connections = more CPU and more parallelism.
+  local n
+  n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)"
+  if ! [[ "${n}" =~ ^[0-9]+$ ]]; then
+    n=1
+  fi
+  if (( n <= 2 )); then
+    echo 1
+  elif (( n <= 4 )); then
+    echo 2
+  elif (( n <= 8 )); then
+    echo 4
+  else
+    # For 16c+ boxes, 8 parallel sessions is a good baseline.
+    echo 8
+  fi
+}
+
 pick_client_raw_port() {
   # Choose a port that is not LISTENing locally (best-effort) and stays below common ephemeral ranges.
   local p
@@ -84,6 +104,38 @@ pick_client_raw_port() {
     p=$((p+1))
   done
   # Fallback: still return default (iptables helper may skip if conflicts are real).
+  printf "%s" "${CLIENT_RAW_PORT_DEFAULT}"
+  return 0
+}
+
+pick_client_raw_port_range() {
+  # Pick a base port such that [base..base+conn-1] is free of LISTEN sockets.
+  local conn="${1:-1}"
+  if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then
+    conn=1
+  fi
+
+  local base end p
+  base="${CLIENT_RAW_PORT_DEFAULT}"
+  while (( base < 30000 )); do
+    end=$(( base + conn - 1 ))
+    if (( end > 65535 )); then
+      break
+    fi
+    local ok="1"
+    for ((p=base; p<=end; p++)); do
+      if is_tcp_port_listening "${p}"; then
+        ok="0"
+        break
+      fi
+    done
+    if [[ "${ok}" == "1" ]]; then
+      printf "%s" "${base}"
+      return 0
+    fi
+    base=$((base+1))
+  done
+
   printf "%s" "${CLIENT_RAW_PORT_DEFAULT}"
   return 0
 }
@@ -489,8 +541,8 @@ transport:
     guard_window: 30
     guard_skew: 1
     max_sessions: 2048
-    max_streams_total: 65536
-    max_streams_per_session: 8192
+    max_streams_total: 262144
+    max_streams_per_session: 32768
     header_timeout: 10
     smuxbuf: 16777216
     streambuf: 4194304
@@ -499,9 +551,15 @@ EOF
 
 gen_client_config_no_socks() {
   # X-UI only mode: do not generate a SOCKS listener at all.
-  local iface="$1" ip="$2" router_mac="$3" local_port="$4" remote_ip="$5" port="$6" key="$7"
+  local iface="$1" ip="$2" router_mac="$3" local_port="$4" remote_ip="$5" port="$6" key="$7" conn="$8"
   local key_q
   key_q="$(yaml_quote "${key}")"
+  if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then
+    conn=1
+  fi
+  if (( conn > 256 )); then
+    conn=256
+  fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "client"
 
@@ -525,7 +583,7 @@ server:
 
 transport:
   protocol: "kcp"
-  conn: 1
+  conn: ${conn}
   kcp:
     mode: "${KCP_MODE}"
     mtu: ${KCP_MTU}
@@ -587,7 +645,7 @@ setup_outside_server() {
 setup_inside_xui_only() {
   # One-step inside setup for X-UI only (no SOCKS, no extra ports):
   # Listens on 0.0.0.0:<public_port> and forwards via tunnel to outside 127.0.0.1:2443.
-  local iface ip gw mac remote key public_port xray_port listen_addr target_addr local_port
+  local iface ip gw mac remote key public_port xray_port listen_addr target_addr local_port conn local_end
   ensure_service_can_reconfigure || return 1
   iface="$(detect_default_iface || true)"
   if [[ -z "${iface}" ]]; then
@@ -621,10 +679,12 @@ setup_inside_xui_only() {
   listen_addr="0.0.0.0:${public_port}"
   target_addr="127.0.0.1:${xray_port}"
 
-  local_port="$(pick_client_raw_port)"
+  conn="$(pick_client_conn)"
+  local_port="$(pick_client_raw_port_range "${conn}")"
+  local_end=$(( local_port + conn - 1 ))
 
   mkdir -p "${CONFIG_DIR}"
-  gen_client_config_no_socks "${iface}" "${ip}" "${mac}" "${local_port}" "${remote}" "${port}" "${key}"
+  gen_client_config_no_socks "${iface}" "${ip}" "${mac}" "${local_port}" "${remote}" "${port}" "${key}" "${conn}"
   set_forward_single_rule "${listen_addr}" "${target_addr}"
   chmod 600 "${CONFIG_FILE}"
 
@@ -632,7 +692,7 @@ setup_inside_xui_only() {
   install_service
   start_service
 
-  msg "سرور داخل برای X-UI ستاپ شد.\n\nForward:\n  ${listen_addr}  ->  ${target_addr}\n\nروی سرور خارج در x-ui inbound بساز:\n  VLESS / TCP\n  listen: 127.0.0.1\n  port:   ${xray_port}\n\nبعد روی کلاینت‌ها:\n  address = IP ایران\n  port    = ${public_port}"
+  msg "سرور داخل برای X-UI ستاپ شد.\n\nForward:\n  ${listen_addr}  ->  ${target_addr}\n\nTransport:\n  kcp sessions: ${conn}\n  client raw port range: ${local_port}-${local_end}\n\nروی سرور خارج در x-ui inbound بساز:\n  VLESS / TCP\n  listen: 127.0.0.1\n  port:   ${xray_port}\n\nبعد روی کلاینت‌ها:\n  address = IP ایران\n  port    = ${public_port}"
 }
 
 main_loop() {

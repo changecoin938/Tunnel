@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net"
 	"paqet/internal/conf"
 	"paqet/internal/protocol"
 	"paqet/internal/socket"
@@ -16,12 +17,17 @@ type timedConn struct {
 	cfg *conf.Conf
 	ctx context.Context
 
+	netCfg conf.Network
+
 	mu   sync.RWMutex
 	conn tnet.Conn
 }
 
-func newTimedConn(ctx context.Context, cfg *conf.Conf) (*timedConn, error) {
-	tc := &timedConn{cfg: cfg, ctx: ctx}
+func newTimedConn(ctx context.Context, cfg *conf.Conf, connIndex int) (*timedConn, error) {
+	tc := &timedConn{cfg: cfg, ctx: ctx, netCfg: cfg.Network}
+	if err := tc.applyConnIndex(connIndex); err != nil {
+		return nil, err
+	}
 	conn, err := tc.createConn()
 	if err != nil {
 		return nil, err
@@ -31,10 +37,9 @@ func newTimedConn(ctx context.Context, cfg *conf.Conf) (*timedConn, error) {
 }
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
-	netCfg := tc.cfg.Network
-	pConn, err := socket.New(tc.ctx, &netCfg)
+	pConn, err := socket.New(tc.ctx, &tc.netCfg)
 	if err != nil {
-		return nil, fmt.Errorf("could not create raw packet conn: %w", err)
+		return nil, fmt.Errorf("could not create raw packet conn (port=%d): %w", tc.netCfg.Port, err)
 	}
 
 	conn, err := kcp.Dial(tc.cfg.Server.Addr, tc.cfg.Transport.KCP, pConn)
@@ -47,6 +52,44 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		return nil, err
 	}
 	return conn, nil
+}
+
+func cloneUDPAddrPort(a *net.UDPAddr, port int) *net.UDPAddr {
+	if a == nil {
+		return nil
+	}
+	out := *a
+	if a.IP != nil {
+		out.IP = append([]byte(nil), a.IP...)
+	}
+	out.Port = port
+	return &out
+}
+
+func (tc *timedConn) applyConnIndex(connIndex int) error {
+	if connIndex <= 0 {
+		return nil
+	}
+	basePort := tc.netCfg.Port
+	if basePort == 0 {
+		// Random port mode: leave Port=0 so socket.New picks a random port per timedConn.
+		// We intentionally do NOT apply an offset because port=0 is a special "random" value.
+		return nil
+	}
+
+	port := basePort + connIndex
+	if port > 65535 {
+		return fmt.Errorf("client port range too large: base=%d conn_index=%d => %d", basePort, connIndex, port)
+	}
+
+	tc.netCfg.Port = port
+	if tc.netCfg.IPv4.Addr != nil {
+		tc.netCfg.IPv4.Addr = cloneUDPAddrPort(tc.netCfg.IPv4.Addr, port)
+	}
+	if tc.netCfg.IPv6.Addr != nil {
+		tc.netCfg.IPv6.Addr = cloneUDPAddrPort(tc.netCfg.IPv6.Addr, port)
+	}
+	return nil
 }
 
 func (tc *timedConn) getConn() tnet.Conn {

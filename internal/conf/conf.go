@@ -94,7 +94,11 @@ func (c *Conf) validate() error {
 			allErrors = append(allErrors, fmt.Errorf("server address is IPv6, but the IPv6 interface is not configured"))
 		}
 		if c.Transport.Conn > 1 && c.Network.Port != 0 {
-			allErrors = append(allErrors, fmt.Errorf("only one connection is allowed when a client port is explicitly set"))
+			base := c.Network.Port
+			last := base + c.Transport.Conn - 1
+			if last > 65535 {
+				allErrors = append(allErrors, fmt.Errorf("client port range too large: base=%d conn=%d => last=%d (max 65535)", base, c.Transport.Conn, last))
+			}
 		}
 	}
 	return writeErr(allErrors)
