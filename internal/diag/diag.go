@@ -20,6 +20,7 @@ func Enabled() bool { return enabled }
 type ConfigInfo struct {
 	Role      string `json:"role,omitempty"`
 	Interface string `json:"interface,omitempty"`
+	DSCP      int    `json:"dscp,omitempty"`
 
 	IPv4Addr string `json:"ipv4_addr,omitempty"`
 	IPv6Addr string `json:"ipv6_addr,omitempty"`
@@ -355,7 +356,7 @@ func FormatText(s Status) string {
 			"    udp: up=%d  down=%d\n"+
 			"  %s\n"+
 			"  runtime: goroutines=%d alloc=%dB sys=%dB gc=%d\n"+
-			"  config: iface=%s ipv4=%s ipv6=%s server=%s listen=%s conns=%d guard=%v key_id=%s pprof=%s\n",
+			"  config: iface=%s dscp=%d ipv4=%s ipv6=%s server=%s listen=%s conns=%d guard=%v key_id=%s pprof=%s\n",
 		s.Config.Role,
 		s.Uptime,
 		s.Version, s.GitTag, s.GitCommit,
@@ -370,6 +371,6 @@ func FormatText(s Status) string {
 		s.UDPUpBytes, s.UDPDownBytes,
 		pingLine,
 		s.Goroutines, s.AllocBytes, s.SysBytes, s.NumGC,
-		s.Config.Interface, s.Config.IPv4Addr, s.Config.IPv6Addr, s.Config.ServerAddr, s.Config.ListenAddr, s.Config.Conns, s.Config.Guard, s.Config.KeyID, s.Config.Pprof,
+		s.Config.Interface, s.Config.DSCP, s.Config.IPv4Addr, s.Config.IPv6Addr, s.Config.ServerAddr, s.Config.ListenAddr, s.Config.Conns, s.Config.Guard, s.Config.KeyID, s.Config.Pprof,
 	)
 }

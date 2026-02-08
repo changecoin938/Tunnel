@@ -16,6 +16,7 @@ type Addr struct {
 type Network struct {
 	Interface_ string         `yaml:"interface"`
 	GUID       string         `yaml:"guid"`
+	DSCP       int            `yaml:"dscp"`
 	IPv4       Addr           `yaml:"ipv4"`
 	IPv6       Addr           `yaml:"ipv6"`
 	PCAP       PCAP           `yaml:"pcap"`
@@ -34,6 +35,9 @@ func (n *Network) validate() []error {
 
 	if n.Interface_ == "" {
 		errors = append(errors, fmt.Errorf("network interface is required"))
+	}
+	if n.DSCP < 0 || n.DSCP > 63 {
+		errors = append(errors, fmt.Errorf("network dscp must be between 0-63"))
 	}
 	if len(n.Interface_) > 15 {
 		errors = append(errors, fmt.Errorf("network interface name too long (max 15 characters): '%s'", n.Interface_))

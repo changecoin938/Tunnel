@@ -25,6 +25,7 @@ socks5:
 # Network interface settings
 network:
   interface: "en0"                          # CHANGE ME: Network interface (en0, eth0, wlan0, etc.)
+  dscp: 0                                   # DSCP marking (0-63). Keep 0 for best throughput; some providers police EF (46).
   # guid: "\Device\NPF_{...}"               # Windows only (Npcap).
 
   # IPv4 configuration

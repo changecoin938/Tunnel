@@ -67,6 +67,8 @@ PCAP_PROMISC="false"
 PCAP_IMMEDIATE="true"
 PCAP_TIMEOUT_MS="0"
 
+DSCP_DEFAULT="0"
+
 DEBUG_PPROF_DEFAULT="127.0.0.1:6060"
 
 # Client raw TCP port (local). We pick a stable port below the OS ephemeral range
@@ -610,6 +612,79 @@ set_snaplen() {
   return 0
 }
 
+set_dscp() {
+  local dscp="$1"
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}"
+    return 1
+  fi
+  if ! [[ "${dscp}" =~ ^[0-9]+$ ]] || (( dscp < 0 || dscp > 63 )); then
+    msg "DSCP باید عدد بین 0 تا 63 باشد."
+    return 1
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v dscp="${dscp}" '
+    BEGIN { in_net=0; saw_net=0; wrote=0 }
+    /^[[:space:]]*network:[[:space:]]*$/ {
+      in_net=1
+      saw_net=1
+      wrote=0
+      print
+      next
+    }
+    in_net && /^[^[:space:]][^:]*:/ {
+      if (wrote == 0) { print "  dscp: " dscp; wrote=1 }
+      in_net=0
+      # fallthrough to print this top-level line
+    }
+    in_net && /^[[:space:]]*dscp:[[:space:]]*/ {
+      if (wrote == 0) { print "  dscp: " dscp; wrote=1 }
+      next
+    }
+    { print }
+    END {
+      if (in_net == 1 && wrote == 0) {
+        print "  dscp: " dscp
+      }
+      if (saw_net == 0) {
+        # Should never happen (config always has a network block), but keep file valid.
+        print ""
+        print "network:"
+        print "  dscp: " dscp
+      }
+    }
+  ' "${CONFIG_FILE}" >"${tmp}"
+  mv "${tmp}" "${CONFIG_FILE}"
+  chmod 600 "${CONFIG_FILE}" || true
+  systemctl restart "${SERVICE_NAME}" || true
+  return 0
+}
+
+set_dscp_menu() {
+  local choice
+  choice="$(menu "${APP}" "DSCP (Traffic Class) روی بعضی شبکه‌ها باعث افت شدید پهنای‌باند می‌شود.\n\nکدام را می‌خواهی؟" \
+    "0" "DSCP=0 (پیشنهادی برای throughput)" \
+    "46" "DSCP=46 (EF - low latency, ممکنه سخت پلیس بشه)" \
+    "C" "Custom (0-63)" \
+    "B" "Back")" || return 0
+
+  case "${choice}" in
+    0|46)
+      set_dscp "${choice}" || true
+      ;;
+    C)
+      local v
+      v="$(input "${APP}" "DSCP (0-63):" "0")" || return 0
+      set_dscp "${v}" || true
+      ;;
+    B)
+      return 0
+      ;;
+  esac
+}
+
 set_debug_endpoints() {
   local enable="$1" pprof="${2:-${DEBUG_PPROF_DEFAULT}}"
   if [[ ! -f "${CONFIG_FILE}" ]]; then
@@ -950,6 +1025,7 @@ diagnostics_loop() {
       "8" "Show /debug/paqet/status (text)" \
       "9" "Set snaplen=65535 + restart" \
       "10" "Live monitor (1s, Ctrl+C)" \
+      "11" "Set DSCP (0 throughput / 46 low-latency)" \
       "0" "Back")" || return 0
 
     case "${choice}" in
@@ -970,6 +1046,7 @@ diagnostics_loop() {
       8) show_debug_status ;;
       9) set_snaplen "65535" || true ;;
       10) live_monitor || true ;;
+      11) set_dscp_menu || true ;;
       0) return 0 ;;
     esac
   done
@@ -1073,6 +1150,7 @@ listen:
 
 network:
   interface: "${iface}"
+  dscp: ${DSCP_DEFAULT}
   ipv4:
     addr: "${ip}:${port}"
     router_mac: "${router_mac}"
@@ -1128,6 +1206,7 @@ log:
 
 network:
   interface: "${iface}"
+  dscp: ${DSCP_DEFAULT}
   ipv4:
     addr: "${ip}:${local_port}"
     router_mac: "${router_mac}"

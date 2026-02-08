@@ -57,6 +57,7 @@ func initialize(cfg *conf.Conf) {
 		diag.SetConfig(diag.ConfigInfo{
 			Role:      cfg.Role,
 			Interface: cfg.Network.Interface_,
+			DSCP:      cfg.Network.DSCP,
 			IPv4Addr:  cfg.Network.IPv4.Addr_,
 			IPv6Addr:  cfg.Network.IPv6.Addr_,
 			ServerAddr: func() string {

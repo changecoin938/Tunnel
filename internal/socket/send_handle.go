@@ -29,6 +29,8 @@ type SendHandle struct {
 	srcIPv6     net.IP
 	srcIPv6RHWA net.HardwareAddr
 	srcPort     uint16
+	ipv4TOS     uint8
+	ipv6VtcFlow uint32
 	time        uint32
 	tsCounter   uint32
 	tcpF        TCPF
@@ -96,6 +98,17 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 			},
 		},
 	}
+	// DSCP: some networks/provider edges police EF (46) aggressively. Default to 0 for maximum throughput
+	// unless explicitly configured via `network.dscp`.
+	dscp := cfg.DSCP
+	if dscp < 0 {
+		dscp = 0
+	}
+	if dscp > 63 {
+		dscp = 63
+	}
+	sh.ipv4TOS = uint8(dscp << 2) // DSCP(6) << 2, ECN(2)=0
+	sh.ipv6VtcFlow = 0x60000000 | (uint32(sh.ipv4TOS) << 20)
 	if cfg.IPv4.Addr != nil {
 		sh.srcIPv4 = cfg.IPv4.Addr.IP
 		sh.srcIPv4RHWA = cfg.IPv4.Router
@@ -178,7 +191,7 @@ func (h *SendHandle) WriteParts(prefix []byte, payload []byte, addr *net.UDPAddr
 
 		// IPv4 header
 		ip := frame[14 : 14+20]
-		writeIPv4Header(ip, src4, dst4, uint16(20+tcpLen))
+		writeIPv4Header(ip, h.ipv4TOS, src4, dst4, uint16(20+tcpLen))
 
 		// TCP header + opts + payload
 		tcpOff := 14 + 20
@@ -222,7 +235,7 @@ func (h *SendHandle) WriteParts(prefix []byte, payload []byte, addr *net.UDPAddr
 
 		// IPv6 header
 		ip := frame[14 : 14+40]
-		writeIPv6Header(ip, src16, dst16, uint16(tcpLen))
+		writeIPv6Header(ip, h.ipv6VtcFlow, src16, dst16, uint16(tcpLen))
 
 		// TCP header + opts + payload
 		tcpOff := 14 + 40
@@ -246,10 +259,10 @@ func (h *SendHandle) WriteParts(prefix []byte, payload []byte, addr *net.UDPAddr
 	return fmt.Errorf("invalid destination IP: %v", dstIP)
 }
 
-func writeIPv4Header(hdr []byte, src4, dst4 []byte, totalLen uint16) {
+func writeIPv4Header(hdr []byte, tos uint8, src4, dst4 []byte, totalLen uint16) {
 	// 20 bytes, no options.
 	hdr[0] = 0x45 // Version=4, IHL=5
-	hdr[1] = 184  // TOS (DSCP=46)
+	hdr[1] = tos  // TOS (DSCP<<2 | ECN)
 	hdr[2] = byte(totalLen >> 8)
 	hdr[3] = byte(totalLen)
 	hdr[4], hdr[5] = 0, 0 // ID
@@ -262,10 +275,10 @@ func writeIPv4Header(hdr []byte, src4, dst4 []byte, totalLen uint16) {
 	binary.BigEndian.PutUint16(hdr[10:12], csumFinalize(csum16(hdr)))
 }
 
-func writeIPv6Header(hdr []byte, src16, dst16 []byte, payloadLen uint16) {
+func writeIPv6Header(hdr []byte, vtcFlow uint32, src16, dst16 []byte, payloadLen uint16) {
 	// 40 bytes header.
-	// Version=6, TrafficClass=184, FlowLabel=0.
-	binary.BigEndian.PutUint32(hdr[0:4], 0x6B800000)
+	// Version=6, TrafficClass=(DSCP<<2 | ECN), FlowLabel=0.
+	binary.BigEndian.PutUint32(hdr[0:4], vtcFlow)
 	binary.BigEndian.PutUint16(hdr[4:6], payloadLen)
 	hdr[6] = 6  // NextHeader=TCP
 	hdr[7] = 64 // HopLimit

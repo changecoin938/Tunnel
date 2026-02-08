@@ -304,6 +304,8 @@ To reduce disruption under load, the server can cap sessions/streams and bound s
 
 **Network Configuration:** Use your actual IP address in `network.ipv4.addr`, not `127.0.0.1`. For servers, `network.ipv4.addr` and `listen.addr` ports must match. For clients, use port `0` in `network.ipv4.addr` to automatically assign a random available port and avoid conflicts.
 
+**DSCP Marking:** `network.dscp` controls the DSCP value (0-63) set on raw tunnel packets. Keep it at `0` for best compatibility/throughput. Some providers police EF (`46`) aggressively (good latency but extremely low bandwidth).
+
 **TCP Flag Cycling:** The `network.tcp.local_flag` and `network.tcp.remote_flag` arrays cycle through flag combinations to vary traffic patterns. Common patterns: `["PA"]` (standard data), `["S"]` (connection setup), `["A"]` (acknowledgment).
 
 ### Debugging & Profiling
