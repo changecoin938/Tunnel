@@ -250,6 +250,7 @@ sudo ./paqet <command> [arguments]
 | Command   | Description                                                                      |
 | :-------- | :------------------------------------------------------------------------------- |
 | `run`     | Starts the `paqet` client or server proxy. This is the main operational command. |
+| `status`  | Prints runtime status from `debug/paqet/text` (when debug endpoint is enabled).    |
 | `secret`  | Generates a new, cryptographically secure secret key.                            |
 | `ping`    | Sends a single test packet to the server to verify connectivity .                |
 | `dump`    | A diagnostic tool similar to `tcpdump` that captures and decodes packets.        |

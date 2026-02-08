@@ -36,6 +36,7 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 		}
 
 		flog.Debugf("failed to open stream, reconnecting: %v", err)
+		tc.markBroken(conn)
 		if err := tc.reconnect(); err != nil {
 			return nil, err
 		}

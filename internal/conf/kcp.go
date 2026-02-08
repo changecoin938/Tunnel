@@ -54,7 +54,7 @@ type KCP struct {
 
 func (k *KCP) setDefaults(role string) {
 	if k.Mode == "" {
-		k.Mode = "fast"
+		k.Mode = "fast2"
 	}
 	if k.MTU == 0 {
 		k.MTU = 1350
@@ -122,7 +122,10 @@ func (k *KCP) setDefaults(role string) {
 		k.Smuxbuf = 4 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		k.Streambuf = 2 * 1024 * 1024
+		// Keep conservative by default. Many real-world clients (speedtests, browsers)
+		// open lots of concurrent TCP connections, which becomes lots of SMUX streams.
+		// A large per-stream buffer can cause memory spikes and GC thrash.
+		k.Streambuf = 512 * 1024
 	}
 }
 

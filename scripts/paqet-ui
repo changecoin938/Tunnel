@@ -60,7 +60,7 @@ yaml_quote() {
 }
 
 # Tunnel defaults (high-throughput). These are embedded in generated configs.
-KCP_MODE="fast"
+KCP_MODE="fast2"
 KCP_MTU="1350"
 PCAP_SNAPLEN="65535"
 PCAP_PROMISC="false"
@@ -578,6 +578,25 @@ detect_cfg_pprof() {
   ' "${CONFIG_FILE}" 2>/dev/null || true
 }
 
+detect_transport_conn() {
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    return 0
+  fi
+  awk '
+    BEGIN { in_transport=0 }
+    /^[[:space:]]*transport:[[:space:]]*$/ { in_transport=1; next }
+    in_transport && /^[^[:space:]][^:]*:/ { in_transport=0 }
+    in_transport && /^[[:space:]]*conn:[[:space:]]*/ {
+      line=$0
+      sub(/^[[:space:]]*conn:[[:space:]]*/, "", line)
+      sub(/[[:space:]]+#.*/, "", line)
+      gsub(/[^0-9]/, "", line)
+      print line
+      exit
+    }
+  ' "${CONFIG_FILE}" 2>/dev/null || true
+}
+
 set_log_level() {
   local level="$1"
   if [[ ! -f "${CONFIG_FILE}" ]]; then
@@ -659,6 +678,97 @@ set_dscp() {
   mv "${tmp}" "${CONFIG_FILE}"
   chmod 600 "${CONFIG_FILE}" || true
   systemctl restart "${SERVICE_NAME}" || true
+  return 0
+}
+
+apply_kcp_tuning() {
+  local mode="${1:-${KCP_MODE}}" wnd="${2:-}" smuxbuf="${3:-}" streambuf="${4:-}"
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}"
+    return 1
+  fi
+  if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 || wnd > 65535 )); then
+    msg "Window باید عدد بین 1 تا 65535 باشد."
+    return 1
+  fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then
+    msg "smuxbuf باید >= 1024 باشد."
+    return 1
+  fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then
+    msg "streambuf باید >= 1024 باشد."
+    return 1
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v mode="${mode}" -v wnd="${wnd}" -v smuxbuf="${smuxbuf}" -v streambuf="${streambuf}" '
+    BEGIN {
+      in_kcp=0; saw_kcp=0;
+      kcp_indent=""; key_indent="";
+      saw_mode=0; saw_rcv=0; saw_snd=0; saw_smux=0; saw_stream=0
+    }
+    /^[[:space:]]*kcp:[[:space:]]*$/ {
+      saw_kcp=1
+      in_kcp=1
+      match($0, /^[[:space:]]*/)
+      kcp_indent = substr($0, 1, RLENGTH)
+      key_indent = kcp_indent "  "
+      print
+      next
+    }
+    {
+      if (in_kcp == 1) {
+        match($0, /^[[:space:]]*/)
+        curr = RLENGTH
+        if (curr <= length(kcp_indent) && $0 ~ /^[[:space:]]*[A-Za-z0-9_]+:/) {
+          if (saw_mode == 0)   print key_indent "mode: \"" mode "\""
+          if (saw_rcv == 0)    print key_indent "rcvwnd: " wnd
+          if (saw_snd == 0)    print key_indent "sndwnd: " wnd
+          if (saw_smux == 0)   print key_indent "smuxbuf: " smuxbuf
+          if (saw_stream == 0) print key_indent "streambuf: " streambuf
+          in_kcp = 0
+        }
+      }
+    }
+    in_kcp == 1 && /^[[:space:]]*mode:[[:space:]]*/     { print key_indent "mode: \"" mode "\""; saw_mode=1; next }
+    in_kcp == 1 && /^[[:space:]]*rcvwnd:[[:space:]]*/   { print key_indent "rcvwnd: " wnd; saw_rcv=1; next }
+    in_kcp == 1 && /^[[:space:]]*sndwnd:[[:space:]]*/   { print key_indent "sndwnd: " wnd; saw_snd=1; next }
+    in_kcp == 1 && /^[[:space:]]*smuxbuf:[[:space:]]*/  { print key_indent "smuxbuf: " smuxbuf; saw_smux=1; next }
+    in_kcp == 1 && /^[[:space:]]*streambuf:[[:space:]]*/{ print key_indent "streambuf: " streambuf; saw_stream=1; next }
+    { print }
+    END {
+      if (in_kcp == 1) {
+        if (saw_mode == 0)   print key_indent "mode: \"" mode "\""
+        if (saw_rcv == 0)    print key_indent "rcvwnd: " wnd
+        if (saw_snd == 0)    print key_indent "sndwnd: " wnd
+        if (saw_smux == 0)   print key_indent "smuxbuf: " smuxbuf
+        if (saw_stream == 0) print key_indent "streambuf: " streambuf
+      }
+    }
+  ' "${CONFIG_FILE}" >"${tmp}"
+  mv "${tmp}" "${CONFIG_FILE}"
+  chmod 600 "${CONFIG_FILE}" || true
+  systemctl restart "${SERVICE_NAME}" || true
+  return 0
+}
+
+retune_kcp_defaults() {
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}"
+    return 1
+  fi
+  local conn wnd smuxbuf streambuf
+  conn="$(detect_transport_conn || true)"
+  if [[ -z "${conn}" ]]; then
+    conn=1
+  fi
+  wnd="$(pick_kcp_window "${conn}")"
+  smuxbuf="$(pick_smuxbuf)"
+  streambuf="$(pick_streambuf)"
+
+  apply_kcp_tuning "${KCP_MODE}" "${wnd}" "${smuxbuf}" "${streambuf}" || return 1
+  msg "تنظیمات KCP اعمال شد:\n\nmode=${KCP_MODE}\nwnd=${wnd}\nsmuxbuf=${smuxbuf}\nstreambuf=${streambuf}"
   return 0
 }
 
@@ -1026,6 +1136,7 @@ diagnostics_loop() {
       "9" "Set snaplen=65535 + restart" \
       "10" "Live monitor (1s, Ctrl+C)" \
       "11" "Set DSCP (0 throughput / 46 low-latency)" \
+      "12" "Retune KCP (fast2 + window/buffer پیشنهادی)" \
       "0" "Back")" || return 0
 
     case "${choice}" in
@@ -1047,6 +1158,7 @@ diagnostics_loop() {
       9) set_snaplen "65535" || true ;;
       10) live_monitor || true ;;
       11) set_dscp_menu || true ;;
+      12) retune_kcp_defaults || true ;;
       0) return 0 ;;
     esac
   done

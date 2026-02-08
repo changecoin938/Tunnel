@@ -17,7 +17,7 @@ type timedConn struct {
 	cfg *conf.Conf
 	ctx context.Context
 
-	netCfg conf.Network
+	netCfg    conf.Network
 	connIndex int
 
 	mu   sync.RWMutex
@@ -179,6 +179,20 @@ func (tc *timedConn) getConn() tnet.Conn {
 	return tc.conn
 }
 
+func (tc *timedConn) markBroken(conn tnet.Conn) {
+	if conn == nil {
+		return
+	}
+
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if tc.conn != conn {
+		return
+	}
+	_ = tc.conn.Close()
+	tc.conn = nil
+}
+
 func (tc *timedConn) reconnect() error {
 	tc.mu.Lock()
 	defer tc.mu.Unlock()
@@ -187,8 +201,7 @@ func (tc *timedConn) reconnect() error {
 		return tc.ctx.Err()
 	}
 	if tc.conn != nil {
-		_ = tc.conn.Close()
-		tc.conn = nil
+		return nil
 	}
 
 	backoff := 200 * time.Millisecond

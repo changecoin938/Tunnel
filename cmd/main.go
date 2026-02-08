@@ -7,6 +7,7 @@ import (
 	"paqet/cmd/ping"
 	"paqet/cmd/run"
 	"paqet/cmd/secret"
+	"paqet/cmd/status"
 	"paqet/cmd/version"
 	"paqet/internal/flog"
 
@@ -26,6 +27,7 @@ func main() {
 	rootCmd.AddCommand(secret.Cmd)
 	rootCmd.AddCommand(iface.Cmd)
 	rootCmd.AddCommand(version.Cmd)
+	rootCmd.AddCommand(status.Cmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		flog.Errorf("%v", err)
