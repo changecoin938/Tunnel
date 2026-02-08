@@ -30,5 +30,5 @@ func Dial(addr *net.UDPAddr, cfg *conf.KCP, pConn *socket.PacketConn) (tnet.Conn
 	}
 
 	flog.Debugf("smux session established successfully")
-	return &Conn{pConn, conn, sess}, nil
+	return &Conn{PacketConn: pConn, OwnPacketConn: true, UDPSession: conn, Session: sess}, nil
 }

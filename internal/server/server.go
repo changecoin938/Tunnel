@@ -18,7 +18,6 @@ import (
 
 type Server struct {
 	cfg   *conf.Conf
-	pConn *socket.PacketConn
 	wg    sync.WaitGroup
 
 	sessSem              chan struct{}
@@ -63,22 +62,52 @@ func (s *Server) Start() error {
 		cancel()
 	}()
 
-	pConn, err := socket.New(ctx, &s.cfg.Network)
-	if err != nil {
-		return fmt.Errorf("could not create raw packet conn: %w", err)
+	basePort := s.cfg.Network.Port
+	if basePort == 0 {
+		return fmt.Errorf("server network port cannot be 0 (set network.ipv4.addr/network.ipv6.addr port)")
 	}
-	s.pConn = pConn
-
-	listener, err := kcp.Listen(s.cfg.Transport.KCP, pConn)
-	if err != nil {
-		return fmt.Errorf("could not start KCP listener: %w", err)
+	connCount := s.cfg.Transport.Conn
+	if connCount < 1 {
+		connCount = 1
 	}
-	defer listener.Close()
-	flog.Infof("Server started - listening for packets on :%d", s.cfg.Listen.Addr.Port)
+	lastPort := basePort + connCount - 1
+	if lastPort > 65535 {
+		return fmt.Errorf("server port range too large: base=%d conn=%d => last=%d (max 65535)", basePort, connCount, lastPort)
+	}
 
-	s.wg.Go(func() {
-		s.listen(ctx, listener)
-	})
+	var listeners []tnet.Listener
+	for i := 0; i < connCount; i++ {
+		netCfg := s.cfg.Network
+		netCfg.Port = basePort + i
+
+		pConn, err := socket.New(ctx, &netCfg)
+		if err != nil {
+			return fmt.Errorf("could not create raw packet conn (port=%d): %w", netCfg.Port, err)
+		}
+
+		l, err := kcp.Listen(s.cfg.Transport.KCP, pConn)
+		if err != nil {
+			pConn.Close()
+			return fmt.Errorf("could not start KCP listener (port=%d): %w", netCfg.Port, err)
+			}
+			listeners = append(listeners, l)
+
+			listener := l
+			s.wg.Go(func() {
+				s.listen(ctx, listener)
+			})
+		}
+	defer func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}()
+
+	if connCount > 1 {
+		flog.Infof("Server started - listening for packets on :%d-%d (%d conns)", basePort, lastPort, connCount)
+	} else {
+		flog.Infof("Server started - listening for packets on :%d", basePort)
+	}
 
 	s.wg.Wait()
 	flog.Infof("Server shutdown completed")

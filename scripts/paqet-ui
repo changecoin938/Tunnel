@@ -142,6 +142,109 @@ pick_client_raw_port_range() {
   return 0
 }
 
+detect_mem_total_mb() {
+  local kb
+  kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  if [[ "${kb}" =~ ^[0-9]+$ ]] && (( kb > 0 )); then
+    echo $(( kb / 1024 ))
+    return 0
+  fi
+  echo 0
+  return 0
+}
+
+pick_kcp_window() {
+  # Pick a window size that is large enough for throughput but avoids OOM on smaller boxes.
+  # Window applies per KCP session; total memory scales with `transport.conn`.
+  local conn="${1:-1}"
+  if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then
+    conn=1
+  fi
+  local mem
+  mem="$(detect_mem_total_mb)"
+
+  local wnd
+  if (( mem > 0 && mem < 2048 )); then
+    wnd=2048
+  elif (( mem > 0 && mem < 4096 )); then
+    wnd=4096
+  elif (( mem > 0 && mem < 8192 )); then
+    wnd=8192
+  else
+    wnd=16384
+  fi
+
+  # If we run many sessions, cap per-session window to keep total memory bounded.
+  if (( conn >= 16 && wnd > 8192 )); then
+    wnd=8192
+  fi
+  if (( conn >= 32 && wnd > 4096 )); then
+    wnd=4096
+  fi
+  echo "${wnd}"
+}
+
+pick_smuxbuf() {
+  local mem
+  mem="$(detect_mem_total_mb)"
+  if (( mem > 0 && mem < 2048 )); then
+    echo $(( 4 * 1024 * 1024 ))
+  elif (( mem > 0 && mem < 4096 )); then
+    echo $(( 8 * 1024 * 1024 ))
+  else
+    echo $(( 16 * 1024 * 1024 ))
+  fi
+}
+
+pick_streambuf() {
+  # Per-stream buffer. Keep conservative to avoid memory spikes with many streams.
+  local mem
+  mem="$(detect_mem_total_mb)"
+  if (( mem > 0 && mem < 2048 )); then
+    echo $(( 256 * 1024 ))
+  elif (( mem > 0 && mem < 4096 )); then
+    echo $(( 512 * 1024 ))
+  else
+    echo $(( 1024 * 1024 ))
+  fi
+}
+
+adjust_conn_to_free_server_port_range() {
+  # Reduce conn until [base..base+conn-1] is free of LISTEN sockets.
+  local base="${1:-9999}"
+  local conn="${2:-1}"
+  if ! [[ "${base}" =~ ^[0-9]+$ ]] || (( base < 1 )); then
+    base=9999
+  fi
+  if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then
+    conn=1
+  fi
+  if (( conn > 256 )); then
+    conn=256
+  fi
+
+  while (( conn > 1 )); do
+    local end p ok="1"
+    end=$(( base + conn - 1 ))
+    if (( end > 65535 )); then
+      conn=$((conn-1))
+      continue
+    fi
+    for ((p=base; p<=end; p++)); do
+      if is_tcp_port_listening "${p}"; then
+        ok="0"
+        break
+      fi
+    done
+    if [[ "${ok}" == "1" ]]; then
+      echo "${conn}"
+      return 0
+    fi
+    conn=$((conn-1))
+  done
+  echo 1
+}
+
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
     exec sudo -E "$0" "$@"
@@ -524,37 +627,49 @@ set_debug_endpoints() {
   local tmp
   tmp="$(mktemp)"
   awk -v pprof="${pprof_line}" -v diag="${diag}" '
-    BEGIN { in_dbg=0; saw_dbg=0; wrote_pprof=0; wrote_diag=0; in_log=0; inserted=0 }
-    /^[[:space:]]*log:[[:space:]]*$/ { in_log=1; print; next }
-    in_log && /^[^[:space:]][^:]*:/ {
-      in_log=0
-      # Insert debug block right after log block if we have not seen it yet.
-      if (saw_dbg == 0 && inserted == 0) {
-        print ""
-        print "debug:"
-        print "  pprof: " pprof
-        print "  diag: " diag
-        inserted=1
+    # Ensure debug block is idempotent and unique.
+    # Old UI versions inserted a duplicate "debug:" block (YAML parser rejects duplicate keys).
+    BEGIN { in_dbg=0; skip_dbg=0; saw_dbg=0; wrote_pprof=0; wrote_diag=0 }
+    /^[[:space:]]*debug:[[:space:]]*$/ {
+      if (saw_dbg == 0) {
+        saw_dbg=1
+        in_dbg=1
+        skip_dbg=0
+        wrote_pprof=0
+        wrote_diag=0
+        print
+        next
       }
-      # fallthrough to process current line
+      # Duplicate debug block: skip it entirely.
+      in_dbg=0
+      skip_dbg=1
+      next
     }
-    /^[[:space:]]*debug:[[:space:]]*$/ { in_dbg=1; saw_dbg=1; print; next }
-    in_dbg && /^[^[:space:]][^:]*:/ {
-      # leaving debug block: ensure keys exist
+    skip_dbg == 1 {
+      # Exit skip mode when next top-level key starts.
+      if ($0 ~ /^[^[:space:]][^:]*:/) {
+        skip_dbg=0
+        # fallthrough to process this line normally
+      } else {
+        next
+      }
+    }
+    in_dbg == 1 && $0 ~ /^[^[:space:]][^:]*:/ {
+      # Leaving debug block: ensure keys exist.
       if (wrote_pprof == 0) { print "  pprof: " pprof }
       if (wrote_diag == 0)  { print "  diag: " diag }
       in_dbg=0
-      # continue processing this top-level line
+      # fallthrough to process this top-level line
     }
-    in_dbg && /^[[:space:]]*pprof:[[:space:]]*/ { print "  pprof: " pprof; wrote_pprof=1; next }
-    in_dbg && /^[[:space:]]*diag:[[:space:]]*/  { print "  diag: " diag; wrote_diag=1; next }
+    in_dbg == 1 && /^[[:space:]]*pprof:[[:space:]]*/ { print "  pprof: " pprof; wrote_pprof=1; next }
+    in_dbg == 1 && /^[[:space:]]*diag:[[:space:]]*/  { print "  diag: " diag; wrote_diag=1; next }
     { print }
     END {
       if (in_dbg == 1) {
         if (wrote_pprof == 0) { print "  pprof: " pprof }
         if (wrote_diag == 0)  { print "  diag: " diag }
       }
-      if (saw_dbg == 0 && inserted == 0) {
+      if (saw_dbg == 0) {
         print ""
         print "debug:"
         print "  pprof: " pprof
@@ -577,6 +692,150 @@ show_debug_status() {
   if ! curl -fsS "http://${pprof}/debug/paqet/text" 2>/dev/null | textbox "${APP} debug status" 22 78; then
     msg "به /debug/paqet/text دسترسی ندارم.\n\nاول از منو Debug رو فعال کن (pprof+diag) و دوباره تلاش کن.\n\npprof: ${pprof}"
   fi
+}
+
+live_monitor() {
+  local iface pprof
+  iface="$(detect_cfg_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    iface="$(detect_default_iface || true)"
+  fi
+  pprof="$(detect_cfg_pprof || true)"
+  if [[ -z "${pprof}" ]]; then
+    pprof="${DEBUG_PPROF_DEFAULT}"
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    msg "python3 نصب نیست.\n\nبرای مانیتور لحظه‌ای نصب کن:\n  sudo apt-get update && sudo apt-get install -y python3"
+    return 1
+  fi
+
+  clear
+  echo "paqet live monitor"
+  echo "iface=${iface} pprof=${pprof}"
+  echo "Press Ctrl+C to stop and return."
+  echo
+
+  IFACE="${iface}" PPROF="${pprof}" python3 - <<'PY'
+import json, os, time, urllib.request, subprocess
+
+iface=os.environ.get("IFACE") or "eth0"
+pprof=os.environ.get("PPROF") or "127.0.0.1:6060"
+url=f"http://{pprof}/debug/paqet/status"
+
+def sh(cmd):
+    return subprocess.check_output(cmd, shell=True, text=True).strip()
+
+def rint(p):
+    with open(p,"r") as f:
+        return int(f.read().strip())
+
+def tj():
+    parts=open("/proc/stat","r").readline().split()[1:]
+    return sum(int(x) for x in parts)
+
+def pj(pid):
+    s=open(f"/proc/{pid}/stat","r").read()
+    i=s.rfind(")")
+    rest=s[i+2:].split()
+    return int(rest[11]) + int(rest[12])
+
+def softdrop():
+    d=0
+    for line in open("/proc/net/softnet_stat","r"):
+        c=line.split()
+        if len(c)>1:
+            d += int(c[1],16)
+    return d
+
+def get_status():
+    try:
+        with urllib.request.urlopen(url, timeout=0.5) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+cpu_n=os.cpu_count() or 1
+try:
+    pid_s = sh("pidof paqet | awk '{print $1}'")
+    pid = int(pid_s) if pid_s else None
+except Exception:
+    pid = None
+
+rxp=f"/sys/class/net/{iface}/statistics/rx_bytes"
+txp=f"/sys/class/net/{iface}/statistics/tx_bytes"
+rxd_p=f"/sys/class/net/{iface}/statistics/rx_dropped"
+txd_p=f"/sys/class/net/{iface}/statistics/tx_dropped"
+
+prev = {
+    "t": time.time(),
+    "rx": rint(rxp),
+    "tx": rint(txp),
+    "rxd": rint(rxd_p),
+    "txd": rint(txd_p),
+    "soft": softdrop(),
+    "tj": tj(),
+    "pj": pj(pid) if pid else 0,
+    "appu": 0,
+    "appd": 0,
+    "rawu": 0,
+    "rawd": 0,
+}
+
+st = get_status()
+if st:
+    prev["appu"] = int(st.get("tcp_up_bytes",0)) + int(st.get("udp_up_bytes",0))
+    prev["appd"] = int(st.get("tcp_down_bytes",0)) + int(st.get("udp_down_bytes",0))
+    prev["rawu"] = int(st.get("raw_up_bytes",0))
+    prev["rawd"] = int(st.get("raw_down_bytes",0))
+
+print("time  IF(rx/tx Mbps)  drops(rx/tx/soft)  paqetCPU%  app(up/down Mbps)  raw(up/down Mbps)  sessions streams guardDrops")
+
+while True:
+    time.sleep(1)
+    now = time.time()
+    dt = max(0.001, now - prev["t"])
+
+    rx = rint(rxp); tx = rint(txp)
+    rxd = rint(rxd_p); txd = rint(txd_p)
+    soft = softdrop()
+
+    rx_m = (rx - prev["rx"]) * 8 / dt / 1e6
+    tx_m = (tx - prev["tx"]) * 8 / dt / 1e6
+
+    cpu = 0.0
+    if pid:
+        n_tj = tj()
+        n_pj = pj(pid)
+        d_tj = n_tj - prev["tj"]
+        d_pj = n_pj - prev["pj"]
+        if d_tj > 0:
+            cpu = (d_pj / d_tj) * 100.0 * cpu_n
+        prev["tj"] = n_tj
+        prev["pj"] = n_pj
+
+    st = get_status()
+    appu_m = appd_m = rawu_m = rawd_m = 0.0
+    sessions = streams = guard_drops = 0
+    if st:
+        appu = int(st.get("tcp_up_bytes",0)) + int(st.get("udp_up_bytes",0))
+        appd = int(st.get("tcp_down_bytes",0)) + int(st.get("udp_down_bytes",0))
+        rawu = int(st.get("raw_up_bytes",0))
+        rawd = int(st.get("raw_down_bytes",0))
+        appu_m = (appu - prev["appu"]) * 8 / dt / 1e6
+        appd_m = (appd - prev["appd"]) * 8 / dt / 1e6
+        rawu_m = (rawu - prev["rawu"]) * 8 / dt / 1e6
+        rawd_m = (rawd - prev["rawd"]) * 8 / dt / 1e6
+        prev["appu"], prev["appd"], prev["rawu"], prev["rawd"] = appu, appd, rawu, rawd
+        sessions = int(st.get("sessions",0))
+        streams = int(st.get("streams",0))
+        guard_drops = int(st.get("guard_drops",0))
+
+    print(f"{time.strftime('%H:%M:%S')} {rx_m:8.1f}/{tx_m:8.1f}  {rxd-prev['rxd']}/{txd-prev['txd']}/{soft-prev['soft']:4}     {cpu:7.1f}     {appu_m:7.1f}/{appd_m:7.1f}    {rawu_m:7.1f}/{rawd_m:7.1f}  {sessions:>4} {streams:>6} {guard_drops}", flush=True)
+    prev["t"], prev["rx"], prev["tx"], prev["rxd"], prev["txd"], prev["soft"] = now, rx, tx, rxd, txd, soft
+PY
+
+  stty sane >/dev/null 2>&1 || true
 }
 
 follow_journal() {
@@ -606,6 +865,18 @@ support_report() {
     hostname
     date -Is
     uname -a
+    echo
+
+    echo "=== RESOURCES ==="
+    echo "-- CPU --"
+    (command -v lscpu >/dev/null 2>&1 && lscpu) || true
+    echo
+    echo "-- MEM --"
+    (command -v free >/dev/null 2>&1 && free -h) || true
+    (command -v vmstat >/dev/null 2>&1 && vmstat -SM 1 3) || true
+    echo
+    echo "-- LIMITS --"
+    ulimit -n || true
     echo
 
     echo "=== PAQET VERSION ==="
@@ -649,6 +920,14 @@ support_report() {
       echo
     fi
 
+    echo "=== SYSCTL (relevant) ==="
+    (sysctl net.core.rmem_max net.core.wmem_max net.core.rmem_default net.core.wmem_default net.core.netdev_max_backlog net.ipv4.ip_local_port_range net.netfilter.nf_conntrack_max 2>/dev/null) || true
+    echo
+
+    echo "=== KERNEL (oom / drops) ==="
+    (dmesg -T 2>/dev/null | egrep -i 'out of memory|oom-kill|oom killer|softnet|nf_conntrack: table full' | tail -n 50) || true
+    echo
+
     echo "=== DEBUG (/debug/paqet/text) ==="
     curl -fsS "http://${pprof}/debug/paqet/text" 2>/dev/null || echo "(debug endpoints not reachable)"
     echo
@@ -670,6 +949,7 @@ diagnostics_loop() {
       "7" "Disable debug endpoints" \
       "8" "Show /debug/paqet/status (text)" \
       "9" "Set snaplen=65535 + restart" \
+      "10" "Live monitor (1s, Ctrl+C)" \
       "0" "Back")" || return 0
 
     case "${choice}" in
@@ -689,6 +969,7 @@ diagnostics_loop() {
       7) set_debug_endpoints "false" "" || true ;;
       8) show_debug_status ;;
       9) set_snaplen "65535" || true ;;
+      10) live_monitor || true ;;
       0) return 0 ;;
     esac
   done
@@ -774,9 +1055,13 @@ purge_all() {
 }
 
 gen_server_config() {
-  local iface="$1" ip="$2" router_mac="$3" port="$4" key="$5"
+  local iface="$1" ip="$2" router_mac="$3" port="$4" key="$5" conn="$6" wnd="$7" smuxbuf="$8" streambuf="$9"
   local key_q
   key_q="$(yaml_quote "${key}")"
+  if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then conn=1; fi
+  if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((512*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "server"
 
@@ -800,12 +1085,12 @@ network:
 
 transport:
   protocol: "kcp"
-  conn: 1
+  conn: ${conn}
   kcp:
     mode: "${KCP_MODE}"
     mtu: ${KCP_MTU}
-    rcvwnd: 32768
-    sndwnd: 32768
+    rcvwnd: ${wnd}
+    sndwnd: ${wnd}
     block: "aes"
     key: ${key_q}
     guard: true
@@ -816,14 +1101,14 @@ transport:
     max_streams_total: 262144
     max_streams_per_session: 32768
     header_timeout: 10
-    smuxbuf: 16777216
-    streambuf: 4194304
+    smuxbuf: ${smuxbuf}
+    streambuf: ${streambuf}
 EOF
 }
 
 gen_client_config_no_socks() {
   # X-UI only mode: do not generate a SOCKS listener at all.
-  local iface="$1" ip="$2" router_mac="$3" local_port="$4" remote_ip="$5" port="$6" key="$7" conn="$8"
+  local iface="$1" ip="$2" router_mac="$3" local_port="$4" remote_ip="$5" port="$6" key="$7" conn="$8" wnd="$9" smuxbuf="${10}" streambuf="${11}"
   local key_q
   key_q="$(yaml_quote "${key}")"
   if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then
@@ -832,6 +1117,9 @@ gen_client_config_no_socks() {
   if (( conn > 256 )); then
     conn=256
   fi
+  if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((512*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "client"
 
@@ -859,8 +1147,8 @@ transport:
   kcp:
     mode: "${KCP_MODE}"
     mtu: ${KCP_MTU}
-    rcvwnd: 32768
-    sndwnd: 32768
+    rcvwnd: ${wnd}
+    sndwnd: ${wnd}
     block: "aes"
     key: ${key_q}
     guard: true
@@ -868,8 +1156,8 @@ transport:
     guard_window: 30
     guard_skew: 1
     header_timeout: 10
-    smuxbuf: 16777216
-    streambuf: 4194304
+    smuxbuf: ${smuxbuf}
+    streambuf: ${streambuf}
 EOF
 }
 
@@ -902,16 +1190,28 @@ setup_outside_server() {
   port="$(ensure_tcp_port_free_or_prompt_simple "${port}" "Tunnel port (server)" )" || return 1
 
   key="$("${BIN}" secret)"
+  local conn wnd smuxbuf streambuf
+  conn="$(pick_client_conn)"
+  conn="$(adjust_conn_to_free_server_port_range "${port}" "${conn}")"
+  wnd="$(pick_kcp_window "${conn}")"
+  smuxbuf="$(pick_smuxbuf)"
+  streambuf="$(pick_streambuf)"
 
   mkdir -p "${CONFIG_DIR}"
-  gen_server_config "${iface}" "${ip}" "${mac}" "${port}" "${key}"
+  gen_server_config "${iface}" "${ip}" "${mac}" "${port}" "${key}" "${conn}" "${wnd}" "${smuxbuf}" "${streambuf}"
   chmod 600 "${CONFIG_FILE}"
 
   write_sysctl_defaults
   install_service
   start_service
 
-  msg "سرور خارج ستاپ شد.\n\nکلید Pairing (این را به سرور داخل بده):\n${key}\n\nStatus از منو قابل مشاهده است."
+  local end_port
+  end_port=$(( port + conn - 1 ))
+  if (( conn > 1 )); then
+    msg "سرور خارج ستاپ شد.\n\nTunnel ports: ${port}-${end_port}  (kcp conns: ${conn})\n\nکلید Pairing (این را به سرور داخل بده):\n${key}\n\nStatus از منو قابل مشاهده است."
+  else
+    msg "سرور خارج ستاپ شد.\n\nTunnel port: ${port}\n\nکلید Pairing (این را به سرور داخل بده):\n${key}\n\nStatus از منو قابل مشاهده است."
+  fi
 }
 
 setup_inside_xui_only() {
@@ -954,9 +1254,13 @@ setup_inside_xui_only() {
   conn="$(pick_client_conn)"
   local_port="$(pick_client_raw_port_range "${conn}")"
   local_end=$(( local_port + conn - 1 ))
+  local wnd smuxbuf streambuf
+  wnd="$(pick_kcp_window "${conn}")"
+  smuxbuf="$(pick_smuxbuf)"
+  streambuf="$(pick_streambuf)"
 
   mkdir -p "${CONFIG_DIR}"
-  gen_client_config_no_socks "${iface}" "${ip}" "${mac}" "${local_port}" "${remote}" "${port}" "${key}" "${conn}"
+  gen_client_config_no_socks "${iface}" "${ip}" "${mac}" "${local_port}" "${remote}" "${port}" "${key}" "${conn}" "${wnd}" "${smuxbuf}" "${streambuf}"
   set_forward_single_rule "${listen_addr}" "${target_addr}"
   chmod 600 "${CONFIG_FILE}"
 

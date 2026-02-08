@@ -31,6 +31,10 @@ type ConfigInfo struct {
 
 	Guard bool `json:"guard,omitempty"`
 	Conns int  `json:"conns,omitempty"`
+
+	// KeyID is a short fingerprint of the shared secret (safe to share).
+	// It helps confirm both sides use the same key without revealing it.
+	KeyID string `json:"key_id,omitempty"`
 }
 
 var cfg atomic.Value // *ConfigInfo
@@ -351,7 +355,7 @@ func FormatText(s Status) string {
 			"    udp: up=%d  down=%d\n"+
 			"  %s\n"+
 			"  runtime: goroutines=%d alloc=%dB sys=%dB gc=%d\n"+
-			"  config: iface=%s ipv4=%s ipv6=%s server=%s listen=%s conns=%d guard=%v pprof=%s\n",
+			"  config: iface=%s ipv4=%s ipv6=%s server=%s listen=%s conns=%d guard=%v key_id=%s pprof=%s\n",
 		s.Config.Role,
 		s.Uptime,
 		s.Version, s.GitTag, s.GitCommit,
@@ -366,6 +370,6 @@ func FormatText(s Status) string {
 		s.UDPUpBytes, s.UDPDownBytes,
 		pingLine,
 		s.Goroutines, s.AllocBytes, s.SysBytes, s.NumGC,
-		s.Config.Interface, s.Config.IPv4Addr, s.Config.IPv6Addr, s.Config.ServerAddr, s.Config.ListenAddr, s.Config.Conns, s.Config.Guard, s.Config.Pprof,
+		s.Config.Interface, s.Config.IPv4Addr, s.Config.IPv6Addr, s.Config.ServerAddr, s.Config.ListenAddr, s.Config.Conns, s.Config.Guard, s.Config.KeyID, s.Config.Pprof,
 	)
 }

@@ -39,7 +39,7 @@ func (l *Listener) Accept() (tnet.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Conn{nil, conn, sess}, nil
+	return &Conn{PacketConn: l.packetConn, OwnPacketConn: false, UDPSession: conn, Session: sess}, nil
 }
 
 func (l *Listener) Close() error {

@@ -41,6 +41,32 @@ case "${role}" in
     #   addr: ":9999"
     # (we intentionally ignore network.ipv4.addr like "1.2.3.4:9999")
     port="$({ grep -E '^[[:space:]]*addr:[[:space:]]*"?:[0-9]+' "${config}" || true; } | head -n1 | tr -cd 0-9)"
+
+    # Extract server connection count (transport.conn). Default to 1 on parse issues.
+    conn="$(
+      awk '
+        BEGIN { in_tr=0 }
+        /^[[:space:]]*transport:[[:space:]]*$/ { in_tr=1; next }
+        in_tr && /^[^[:space:]][^:]*:/ { in_tr=0 }
+        in_tr && /^[[:space:]]*conn:[[:space:]]*/ {
+          line=$0
+          sub(/^[[:space:]]*conn:[[:space:]]*/, "", line)
+          sub(/[[:space:]]+#.*/, "", line)
+          gsub(/^"/, "", line); gsub(/"$/, "", line)
+          print line
+          exit
+        }
+      ' "${config}" 2>/dev/null || true
+    )"
+    if ! [[ "${conn}" =~ ^[0-9]+$ ]]; then
+      conn="1"
+    fi
+    if (( conn < 1 )); then
+      conn="1"
+    fi
+    if (( conn > 256 )); then
+      conn="256"
+    fi
     ;;
   client)
     # Extract client local port from:
@@ -150,4 +176,3 @@ else
   rm -f "${state_file}" >/dev/null 2>&1 || true
 fi
 exit 0
-

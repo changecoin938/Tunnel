@@ -10,7 +10,9 @@ import (
 	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
+	"paqet/internal/socket"
 	"paqet/internal/tnet"
+	tkcp "paqet/internal/tnet/kcp"
 	"time"
 )
 
@@ -35,6 +37,11 @@ func streamErrIsBenign(err error) bool {
 }
 
 func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
+	var pConn *socket.PacketConn
+	if kc, ok := conn.(*tkcp.Conn); ok {
+		pConn = kc.PacketConn
+	}
+
 	var perSem chan struct{}
 	if s.maxStreamsPerSession > 0 {
 		perSem = make(chan struct{}, s.maxStreamsPerSession)
@@ -88,7 +95,7 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 				}
 			}()
 			defer strm.Close()
-			if err := s.handleStrm(ctx, strm); err != nil {
+			if err := s.handleStrm(ctx, strm, pConn); err != nil {
 				if ctx.Err() != nil || streamErrIsBenign(err) {
 					flog.Debugf("stream %d from %v closed: %v", strm.SID(), strm.RemoteAddr(), err)
 				} else {
@@ -101,7 +108,7 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 	}
 }
 
-func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm) error {
+func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm, pConn *socket.PacketConn) error {
 	var p protocol.Proto
 	if s.headerTimeout > 0 {
 		_ = strm.SetReadDeadline(time.Now().Add(s.headerTimeout))
@@ -117,7 +124,9 @@ func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm) error {
 		return s.handlePing(strm)
 	case protocol.PTCPF:
 		if len(p.TCPF) != 0 {
-			s.pConn.SetClientTCPF(strm.RemoteAddr(), p.TCPF)
+			if pConn != nil {
+				pConn.SetClientTCPF(strm.RemoteAddr(), p.TCPF)
+			}
 		}
 		return nil
 	case protocol.PTCP:

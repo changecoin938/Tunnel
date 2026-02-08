@@ -14,6 +14,7 @@ import (
 
 type Conn struct {
 	PacketConn *socket.PacketConn
+	OwnPacketConn bool
 	UDPSession *kcp.UDPSession
 	Session    *smux.Session
 }
@@ -67,7 +68,7 @@ func (c *Conn) Close() error {
 	if c.Session != nil {
 		c.Session.Close()
 	}
-	if c.PacketConn != nil {
+	if c.PacketConn != nil && c.OwnPacketConn {
 		c.PacketConn.Close()
 	}
 	return err

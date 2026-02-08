@@ -88,6 +88,19 @@ func (c *Conf) validate() error {
 	allErrors = append(allErrors, c.Transport.validate()...)
 	if c.Role == "server" {
 		allErrors = append(allErrors, c.Listen.validate()...)
+		if c.Network.Port == 0 {
+			allErrors = append(allErrors, fmt.Errorf("server network port cannot be 0 (set network.ipv4.addr/network.ipv6.addr port)"))
+		}
+		if c.Listen.Addr != nil && c.Network.Port != 0 && c.Listen.Addr.Port != c.Network.Port {
+			allErrors = append(allErrors, fmt.Errorf("server listen.addr port (%d) must match network port (%d)", c.Listen.Addr.Port, c.Network.Port))
+		}
+		if c.Transport.Conn > 1 && c.Network.Port != 0 {
+			base := c.Network.Port
+			last := base + c.Transport.Conn - 1
+			if last > 65535 {
+				allErrors = append(allErrors, fmt.Errorf("server port range too large: base=%d conn=%d => last=%d (max 65535)", base, c.Transport.Conn, last))
+			}
+		}
 	} else {
 		allErrors = append(allErrors, c.Server.validate()...)
 		if c.Server.Addr.IP.To4() == nil && c.Network.IPv6.Addr == nil {
