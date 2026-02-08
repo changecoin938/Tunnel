@@ -8,25 +8,26 @@ import (
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
 	"paqet/internal/tnet/kcp"
+	"sync"
 	"time"
 )
 
 type timedConn struct {
-	cfg    *conf.Conf
-	conn   tnet.Conn
-	expire time.Time
-	ctx    context.Context
+	cfg *conf.Conf
+	ctx context.Context
+
+	mu   sync.RWMutex
+	conn tnet.Conn
 }
 
 func newTimedConn(ctx context.Context, cfg *conf.Conf) (*timedConn, error) {
-	var err error
-	tc := timedConn{cfg: cfg, ctx: ctx}
-	tc.conn, err = tc.createConn()
+	tc := &timedConn{cfg: cfg, ctx: ctx}
+	conn, err := tc.createConn()
 	if err != nil {
 		return nil, err
 	}
-
-	return &tc, nil
+	tc.conn = conn
+	return tc, nil
 }
 
 func (tc *timedConn) createConn() (tnet.Conn, error) {
@@ -40,19 +41,45 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = tc.sendTCPF(conn)
-	if err != nil {
+
+	if err := tc.sendTCPF(conn); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	return conn, nil
 }
 
-func (tc *timedConn) waitConn() tnet.Conn {
+func (tc *timedConn) getConn() tnet.Conn {
+	tc.mu.RLock()
+	defer tc.mu.RUnlock()
+	return tc.conn
+}
+
+func (tc *timedConn) reconnect() error {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	if tc.ctx.Err() != nil {
+		return tc.ctx.Err()
+	}
+	if tc.conn != nil {
+		_ = tc.conn.Close()
+		tc.conn = nil
+	}
+
+	backoff := 200 * time.Millisecond
 	for {
-		if c, err := tc.createConn(); err == nil {
-			return c
-		} else {
-			time.Sleep(time.Second)
+		if tc.ctx.Err() != nil {
+			return tc.ctx.Err()
+		}
+		conn, err := tc.createConn()
+		if err == nil {
+			tc.conn = conn
+			return nil
+		}
+		time.Sleep(backoff)
+		if backoff < 5*time.Second {
+			backoff *= 2
 		}
 	}
 }
@@ -73,7 +100,12 @@ func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
 }
 
 func (tc *timedConn) close() {
-	if tc.conn != nil {
-		tc.conn.Close()
+	tc.mu.Lock()
+	conn := tc.conn
+	tc.conn = nil
+	tc.mu.Unlock()
+
+	if conn != nil {
+		_ = conn.Close()
 	}
 }

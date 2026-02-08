@@ -13,6 +13,7 @@ This is a practical checklist to run `paqet` under sustained high traffic. Tune 
 ## OS limits
 
 - **File descriptors**: increase `ulimit -n` (server and client). High stream counts need high fd limits.
+- If using `systemd`, set `LimitNOFILE=` for the service (shell `ulimit` alone may not apply).
 - **Process limits**: ensure enough threads/process limits for Go runtime and networking.
 
 ## NIC & IRQ (Linux)
@@ -39,11 +40,21 @@ These are *starting points* (values depend on RAM/NIC):
 
 Apply changes carefully and confirm with `dmesg`, drops counters, and pprof.
 
+If the server performs **NAT** or is behind a stateful firewall, also validate conntrack capacity:
+
+- `net.netfilter.nf_conntrack_max` (and bucket sizing)
+
 ## paqet configuration knobs
+
+### Logging
+
+- For load tests / production, keep `log.level` at `warn` or higher unless you are actively debugging.
 
 ### PCAP buffer
 
 - `network.pcap.sockbuf`: increase on servers under high PPS. Typical values: 8MB → 16MB/32MB.
+- `network.pcap.immediate`: `false` can reduce CPU at very high PPS (trade-off: slightly higher latency).
+- `network.pcap.timeout_ms`: when `immediate=false`, set a small non-zero timeout (e.g. 5–50ms) to allow batching.
 
 ### KCP tuning
 
@@ -52,6 +63,15 @@ Apply changes carefully and confirm with `dmesg`, drops counters, and pprof.
 - `transport.kcp.mtu`: keep below path MTU (1350 is usually safe).
 - `transport.kcp.mode`: `fast2/fast3` can reduce latency but may increase CPU/bandwidth.
 - `transport.kcp.smuxbuf` / `streambuf`: increase if you see backpressure (but watch memory).
+
+**10Gbps starting point (WAN/DC links):**
+
+- Client: set `transport.conn` to 4–16 (match cores), and start with:
+  - `transport.kcp.sndwnd: 32768`
+  - `transport.kcp.rcvwnd: 32768`
+- Server: start with:
+  - `transport.kcp.sndwnd: 32768`
+  - `transport.kcp.rcvwnd: 32768`
 
 ### Hardening / disruption resistance
 
@@ -66,4 +86,6 @@ Apply changes carefully and confirm with `dmesg`, drops counters, and pprof.
   - heap profile after long runs
 - Track kernel counters for drops (NIC and pcap), plus Go GC stats.
 
+## Horizontal scaling
 
+If one host/process can't handle peak throughput (e.g. many concurrent speed tests), run multiple `paqet` servers on different ports and split clients across them.

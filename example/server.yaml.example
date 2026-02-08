@@ -74,8 +74,8 @@ transport:
                               # Setting true reduces latency but increases bandwidth usage
 
     # mtu: 1350              # Maximum transmission unit (50-1500)
-    # rcvwnd: 1024           # Receive window size (default for server)
-    # sndwnd: 1024           # Send window size (default for server)
+    # rcvwnd: 1024           # Receive window size (default for server). For 10Gbps links, try 16384+
+    # sndwnd: 1024           # Send window size (default for server). For 10Gbps links, try 16384+
 
     # Encryption settings  
     # block: "aes"                    # Encryption: aes, aes-128, aes-128-gcm, aes-192, salsa20, blowfish, twofish, cast5, 3des, tea, xtea, xor, sm4, none.

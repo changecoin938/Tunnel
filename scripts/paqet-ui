@@ -59,7 +59,7 @@ yaml_quote() {
   printf "'%s'" "${s}"
 }
 
-# CPU profile defaults (balanced). These are embedded in generated configs.
+# Tunnel defaults (high-throughput). These are embedded in generated configs.
 KCP_MODE="fast"
 KCP_MTU="1350"
 PCAP_SNAPLEN="2048"
@@ -85,37 +85,6 @@ pick_client_raw_port() {
   done
   # Fallback: still return default (iptables helper may skip if conflicts are real).
   printf "%s" "${CLIENT_RAW_PORT_DEFAULT}"
-  return 0
-}
-
-choose_cpu_profile() {
-  local choice
-  choice="$(menu "${APP}" "پروفایل مصرف CPU را انتخاب کن:\n\n- Balanced: کم‌ریسک، تأخیر کمتر\n- Low CPU: مصرف کمتر، احتمالاً کمی تأخیر بیشتر" \
-    "1" "Balanced (recommended)" \
-    "2" "Low CPU (lower CPU, may increase latency)" \
-    "0" "Cancel")" || return 1
-
-  case "${choice}" in
-    1)
-      KCP_MODE="fast"
-      KCP_MTU="1350"
-      PCAP_IMMEDIATE="true"
-      PCAP_TIMEOUT_MS="0"
-      ;;
-    2)
-      # Low CPU but smooth: avoid bursty pcap buffering (which can look like قطع/وصل on TCP).
-      # Reduce KCP update frequency slightly + increase MTU a bit to reduce packets per second.
-      KCP_MODE="normal"
-      KCP_MTU="1400"
-      PCAP_IMMEDIATE="true"
-      PCAP_TIMEOUT_MS="0"
-      ;;
-    0) return 1 ;;
-  esac
-
-  # Safe defaults for both profiles.
-  PCAP_SNAPLEN="2048"
-  PCAP_PROMISC="false"
   return 0
 }
 
@@ -488,7 +457,7 @@ gen_server_config() {
 role: "server"
 
 log:
-  level: "info"
+  level: "warn"
 
 listen:
   addr: ":${port}"
@@ -511,8 +480,8 @@ transport:
   kcp:
     mode: "${KCP_MODE}"
     mtu: ${KCP_MTU}
-    rcvwnd: 8192
-    sndwnd: 8192
+    rcvwnd: 32768
+    sndwnd: 32768
     block: "aes"
     key: ${key_q}
     guard: true
@@ -537,7 +506,7 @@ gen_client_config_no_socks() {
 role: "client"
 
 log:
-  level: "info"
+  level: "warn"
 
 network:
   interface: "${iface}"
@@ -545,7 +514,7 @@ network:
     addr: "${ip}:${local_port}"
     router_mac: "${router_mac}"
   pcap:
-    sockbuf: 16777216
+    sockbuf: 33554432
     snaplen: ${PCAP_SNAPLEN}
     promisc: ${PCAP_PROMISC}
     immediate: ${PCAP_IMMEDIATE}
@@ -560,8 +529,8 @@ transport:
   kcp:
     mode: "${KCP_MODE}"
     mtu: ${KCP_MTU}
-    rcvwnd: 4096
-    sndwnd: 4096
+    rcvwnd: 32768
+    sndwnd: 32768
     block: "aes"
     key: ${key_q}
     guard: true
@@ -601,8 +570,6 @@ setup_outside_server() {
   # Simple defaults (no port prompts unless busy)
   port="9999"
   port="$(ensure_tcp_port_free_or_prompt_simple "${port}" "Tunnel port (server)" )" || return 1
-
-  choose_cpu_profile || return 1
 
   key="$("${BIN}" secret)"
 
@@ -654,8 +621,6 @@ setup_inside_xui_only() {
   listen_addr="0.0.0.0:${public_port}"
   target_addr="127.0.0.1:${xray_port}"
 
-  choose_cpu_profile || return 1
-
   local_port="$(pick_client_raw_port)"
 
   mkdir -p "${CONFIG_DIR}"
@@ -697,5 +662,3 @@ main_loop() {
 need_root "$@"
 ensure_deps
 main_loop
-
-

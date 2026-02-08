@@ -2,13 +2,37 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
+	"os"
 	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
 	"time"
 )
+
+func streamErrIsBenign(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return false
+}
 
 func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 	var perSem chan struct{}
@@ -24,6 +48,10 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 		}
 		strm, err := conn.AcceptStrm()
 		if err != nil {
+			if ctx.Err() != nil || streamErrIsBenign(err) {
+				flog.Debugf("stream accept closed for %v: %v", conn.RemoteAddr(), err)
+				return
+			}
 			flog.Errorf("failed to accept stream on %v: %v", conn.RemoteAddr(), err)
 			return
 		}
@@ -61,7 +89,11 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 			}()
 			defer strm.Close()
 			if err := s.handleStrm(ctx, strm); err != nil {
-				flog.Errorf("stream %d from %v closed with error: %v", strm.SID(), strm.RemoteAddr(), err)
+				if ctx.Err() != nil || streamErrIsBenign(err) {
+					flog.Debugf("stream %d from %v closed: %v", strm.SID(), strm.RemoteAddr(), err)
+				} else {
+					flog.Errorf("stream %d from %v closed with error: %v", strm.SID(), strm.RemoteAddr(), err)
+				}
 			} else {
 				flog.Debugf("stream %d from %v closed", strm.SID(), strm.RemoteAddr())
 			}
@@ -77,8 +109,7 @@ func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm) error {
 	err := p.Read(strm)
 	_ = strm.SetReadDeadline(time.Time{})
 	if err != nil {
-		flog.Errorf("failed to read protocol message from stream %d: %v", strm.SID(), err)
-		return err
+		return fmt.Errorf("read protocol header: %w", err)
 	}
 
 	switch p.Type {
@@ -94,7 +125,6 @@ func (s *Server) handleStrm(ctx context.Context, strm tnet.Strm) error {
 	case protocol.PUDP:
 		return s.handleUDPProtocol(ctx, strm, &p)
 	default:
-		flog.Errorf("unknown protocol type %d on stream %d", p.Type, strm.SID())
 		return fmt.Errorf("unknown protocol type: %d", p.Type)
 	}
 }

@@ -1,39 +1,43 @@
 package client
 
 import (
+	"errors"
 	"paqet/internal/flog"
 	"paqet/internal/tnet"
-	"time"
 )
 
-func (c *Client) newConn() (tnet.Conn, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	autoExpire := 300
-	tc := c.iter.Next()
-	go tc.sendTCPF(tc.conn)
-	err := tc.conn.Ping(false)
-	if err != nil {
-		flog.Infof("connection lost, retrying....")
-		if tc.conn != nil {
-			tc.conn.Close()
-		}
-		tc.conn = tc.waitConn()
-		tc.expire = time.Now().Add(time.Duration(autoExpire) * time.Second)
-	}
-	return tc.conn, nil
-}
+var errNoTunnelConnections = errors.New("no tunnel connections available")
 
 func (c *Client) newStrm() (tnet.Strm, error) {
-	conn, err := c.newConn()
-	if err != nil {
-		flog.Debugf("session creation failed, retrying")
-		return c.newStrm()
+	if c == nil || c.iter == nil || len(c.iter.Items) == 0 {
+		return nil, errNoTunnelConnections
 	}
-	strm, err := conn.OpenStrm()
-	if err != nil {
-		flog.Debugf("failed to open stream, retrying: %v", err)
-		return c.newStrm()
+
+	for {
+		tc := c.iter.Next()
+		if tc == nil {
+			return nil, errNoTunnelConnections
+		}
+
+		conn := tc.getConn()
+		if conn == nil {
+			if err := tc.reconnect(); err != nil {
+				return nil, err
+			}
+			conn = tc.getConn()
+			if conn == nil {
+				continue
+			}
+		}
+
+		strm, err := conn.OpenStrm()
+		if err == nil {
+			return strm, nil
+		}
+
+		flog.Debugf("failed to open stream, reconnecting: %v", err)
+		if err := tc.reconnect(); err != nil {
+			return nil, err
+		}
 	}
-	return strm, nil
 }

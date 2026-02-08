@@ -7,14 +7,12 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/iterator"
 	"paqet/internal/tnet"
-	"sync"
 )
 
 type Client struct {
 	cfg     *conf.Conf
 	iter    *iterator.Iterator[*timedConn]
 	udpPool *udpPool
-	mu      sync.Mutex
 }
 
 func New(cfg *conf.Conf) (*Client, error) {

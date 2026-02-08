@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
-	flog.Infof("accepted UDP stream %d: %v -> %s", strm.SID(), strm.RemoteAddr(), p.Addr.String())
+	flog.Debugf("accepted UDP stream %d: %v -> %s", strm.SID(), strm.RemoteAddr(), p.Addr.String())
 	return s.handleUDP(ctx, strm, p.Addr.String())
 }
 

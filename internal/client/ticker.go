@@ -19,11 +19,15 @@ func (c *Client) ticker(ctx context.Context) {
 			}
 			tc := c.iter.Items[i%len(c.iter.Items)]
 			i++
-			if tc == nil || tc.conn == nil {
+			if tc == nil {
+				continue
+			}
+			conn := tc.getConn()
+			if conn == nil {
 				continue
 			}
 			start := time.Now()
-			err := tc.conn.Ping(true)
+			err := conn.Ping(true)
 			diag.SetPing(time.Since(start), err)
 		case <-ctx.Done():
 			return

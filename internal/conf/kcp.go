@@ -138,11 +138,11 @@ func (k *KCP) validate() []error {
 		errors = append(errors, fmt.Errorf("KCP MTU must be between 50-1500 bytes"))
 	}
 
-	if k.Rcvwnd < 1 || k.Rcvwnd > 32768 {
-		errors = append(errors, fmt.Errorf("KCP rcvwnd must be between 1-32768"))
+	if k.Rcvwnd < 1 || k.Rcvwnd > 65535 {
+		errors = append(errors, fmt.Errorf("KCP rcvwnd must be between 1-65535"))
 	}
-	if k.Sndwnd < 1 || k.Sndwnd > 32768 {
-		errors = append(errors, fmt.Errorf("KCP sndwnd must be between 1-32768"))
+	if k.Sndwnd < 1 || k.Sndwnd > 65535 {
+		errors = append(errors, fmt.Errorf("KCP sndwnd must be between 1-65535"))
 	}
 
 	validBlocks := []string{"aes", "aes-128", "aes-128-gcm", "aes-192", "salsa20", "blowfish", "twofish", "cast5", "3des", "tea", "xtea", "xor", "sm4", "none", "null"}

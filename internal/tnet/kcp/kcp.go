@@ -9,6 +9,10 @@ import (
 )
 
 func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
+	// smux expects a byte-stream (TCP-like) connection. Enabling KCP stream mode
+	// reduces message-fragment head-of-line blocking and improves throughput.
+	conn.SetStreamMode(true)
+
 	var noDelay, interval, resend, noCongestion int
 	var wDelay, ackNoDelay bool
 	switch cfg.Mode {
