@@ -22,9 +22,10 @@ func (p *PCAP) setDefaults(role string) {
 		}
 	}
 	if p.Snaplen == 0 {
-		// Bounds per-packet capture size (helps if filters miss or you see unexpected jumbo frames).
-		// paqet packets are small, so 2048 is typically plenty.
-		p.Snaplen = 2048
+		// Bounds per-packet capture size. Keep this large enough to safely capture
+		// GRO/LRO-coalesced TCP payloads on some kernels/NICs; otherwise libpcap may
+		// truncate frames and corrupt higher-layer packets.
+		p.Snaplen = 65535
 	}
 	// Default to non-promiscuous capture (lower overhead). This tunnel only needs
 	// traffic destined for this host anyway (BPF filters further narrow it down).

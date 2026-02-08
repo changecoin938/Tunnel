@@ -62,7 +62,7 @@ yaml_quote() {
 # Tunnel defaults (high-throughput). These are embedded in generated configs.
 KCP_MODE="fast"
 KCP_MTU="1350"
-PCAP_SNAPLEN="2048"
+PCAP_SNAPLEN="65535"
 PCAP_PROMISC="false"
 PCAP_IMMEDIATE="true"
 PCAP_TIMEOUT_MS="0"

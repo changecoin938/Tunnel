@@ -1,6 +1,7 @@
 package socket
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"paqet/internal/conf"
 	"paqet/internal/diag"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -20,6 +22,14 @@ type PacketConn struct {
 	guard         *guardState
 	readDeadline  atomic.Value
 	writeDeadline atomic.Value
+
+	// Guarded payload de-coalescing:
+	// Some NICs/kernels coalesce multiple small TCP segments into a single large frame (GRO/LRO),
+	// which would otherwise break KCP (it expects a single packet per ReadFrom).
+	pending     [][]byte // slices into pendingBuf (guard header already stripped)
+	pendingBuf  []byte
+	pendingAddr net.Addr
+	bufPool     sync.Pool // []byte, used for pendingBuf
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -48,6 +58,9 @@ func New(ctx context.Context, cfg *conf.Network) (*PacketConn, error) {
 		recvHandle: recvHandle,
 		ctx:        ctx,
 		cancel:     cancel,
+		bufPool: sync.Pool{
+			New: func() any { return make([]byte, 0, 64*1024) },
+		},
 	}
 
 	return conn, nil
@@ -78,6 +91,27 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 	}
 
 	for {
+		// If we previously received a coalesced frame, drain pending packets first.
+		if len(c.pending) > 0 {
+			seg := c.pending[0]
+			c.pending = c.pending[1:]
+			addr = c.pendingAddr
+			if len(seg) > len(data) {
+				// Should never happen (kcp-go reads into a fixed 1500-byte buffer), but don't
+				// return an error: kcp-go treats ReadFrom errors as fatal.
+				if len(c.pending) == 0 {
+					c.recyclePending()
+				}
+				continue
+			}
+			copy(data, seg)
+			diag.AddRawDown(len(seg) + guardHeaderLen)
+			if len(c.pending) == 0 {
+				c.recyclePending()
+			}
+			return len(seg), addr, nil
+		}
+
 		select {
 		case <-c.ctx.Done():
 			return 0, nil, c.ctx.Err()
@@ -113,10 +147,26 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 				diag.AddGuardDrop()
 				continue
 			}
+
+			// Detect and split GRO/LRO-coalesced payloads:
+			// payload may contain multiple (guardHeader + encryptedKCP) packets concatenated.
+			if next := findNextGuard(payload, guardHeaderLen, g, cookies); next != -1 {
+				if c.enqueueCoalesced(payload, addr, g, cookies) {
+					// Now drain from pending on the next iteration.
+					continue
+				}
+				// If enqueue failed for any reason, fall back to single-packet behavior below.
+			}
+
 			diag.AddGuardPass()
 			payload = payload[guardHeaderLen:]
 		}
 
+		if len(payload) > len(data) {
+			// Never silently truncate. Also, never return an error here because kcp-go treats
+			// ReadFrom errors as fatal. Drop and let KCP recover via retransmit.
+			continue
+		}
 		n = copy(data, payload)
 		rawCount := n
 		if c.guard != nil {
@@ -125,6 +175,117 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		diag.AddRawDown(rawCount)
 		return n, addr, nil
 	}
+}
+
+func (c *PacketConn) recyclePending() {
+	if c.pendingBuf == nil {
+		c.pendingAddr = nil
+		return
+	}
+	buf := c.pendingBuf
+	c.pendingBuf = nil
+	c.pendingAddr = nil
+	c.pending = c.pending[:0]
+	if cap(buf) <= 512*1024 {
+		buf = buf[:0]
+		c.bufPool.Put(buf)
+	}
+}
+
+func findNextGuard(payload []byte, start int, g *guardState, cookies *guardCookies) int {
+	if len(payload) < guardHeaderLen || start < 0 || start >= len(payload) {
+		return -1
+	}
+	magic := g.magic[:]
+	i := start
+	for {
+		j := bytes.Index(payload[i:], magic)
+		if j == -1 {
+			return -1
+		}
+		pos := i + j
+		if pos+guardHeaderLen > len(payload) {
+			return -1
+		}
+		ok := false
+		for k := range cookies.cookies {
+			if hmac.Equal(payload[pos+4:pos+12], cookies.cookies[k][:]) {
+				ok = true
+				break
+			}
+		}
+		if ok {
+			return pos
+		}
+		// Keep scanning after this byte to avoid infinite loops on repeated matches.
+		i = pos + 1
+		if i >= len(payload) {
+			return -1
+		}
+	}
+}
+
+func (c *PacketConn) enqueueCoalesced(payload []byte, addr net.Addr, g *guardState, cookies *guardCookies) bool {
+	// Copy payload into a stable buffer; pcap buffers are reused.
+	buf := c.bufPool.Get().([]byte)
+	if cap(buf) < len(payload) {
+		buf = make([]byte, len(payload))
+	} else {
+		buf = buf[:len(payload)]
+	}
+	copy(buf, payload)
+
+	// Split on validated guard headers.
+	var parts [][]byte
+	for pos := 0; pos+guardHeaderLen <= len(buf); {
+		if !hmac.Equal(buf[pos:pos+4], g.magic[:]) {
+			diag.AddGuardDrop()
+			pos++
+			continue
+		}
+		ok := false
+		for k := range cookies.cookies {
+			if hmac.Equal(buf[pos+4:pos+12], cookies.cookies[k][:]) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			diag.AddGuardDrop()
+			pos++
+			continue
+		}
+		diag.AddGuardPass()
+
+		start := pos + guardHeaderLen
+		next := findNextGuard(buf, start, g, cookies)
+		end := len(buf)
+		if next != -1 {
+			end = next
+		}
+		if end > start {
+			parts = append(parts, buf[start:end])
+		}
+		if next == -1 {
+			break
+		}
+		pos = next
+	}
+
+	if len(parts) == 0 {
+		// Give buffer back.
+		if cap(buf) <= 512*1024 {
+			buf = buf[:0]
+			c.bufPool.Put(buf)
+		}
+		return false
+	}
+
+	// Stash for subsequent ReadFrom calls.
+	c.pendingBuf = buf
+	c.pending = append(c.pending[:0], parts...)
+	c.pendingAddr = addr
+	return true
 }
 
 func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
