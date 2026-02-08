@@ -67,6 +67,8 @@ PCAP_PROMISC="false"
 PCAP_IMMEDIATE="true"
 PCAP_TIMEOUT_MS="0"
 
+DEBUG_PPROF_DEFAULT="127.0.0.1:6060"
+
 # Client raw TCP port (local). We pick a stable port below the OS ephemeral range
 # to reduce collisions with normal outbound connections and to allow iptables rules
 # (RST-drop / NOTRACK) to be applied reliably by systemd helper scripts.
@@ -422,6 +424,276 @@ status_screen() {
   printf "%b\n" "${out}" | textbox "${APP} status" 22 78
 }
 
+redact_config() {
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    sed -E \
+      -e 's/^([[:space:]]*key:[[:space:]]*).*/\1"***REDACTED***"/' \
+      -e 's/^([[:space:]]*password:[[:space:]]*).*/\1"***REDACTED***"/' \
+      "${CONFIG_FILE}"
+  else
+    echo "MISSING: ${CONFIG_FILE}"
+  fi
+}
+
+detect_cfg_iface() {
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    return 0
+  fi
+  awk '
+    BEGIN { in_net=0 }
+    /^[[:space:]]*network:[[:space:]]*$/ { in_net=1; next }
+    in_net && /^[^[:space:]][^:]*:/ { in_net=0 }
+    in_net && /^[[:space:]]*interface:[[:space:]]*/ {
+      line=$0
+      sub(/^[[:space:]]*interface:[[:space:]]*/, "", line)
+      sub(/[[:space:]]+#.*/, "", line)
+      gsub(/^"/, "", line); gsub(/"$/, "", line)
+      print line
+      exit
+    }
+  ' "${CONFIG_FILE}" 2>/dev/null || true
+}
+
+detect_cfg_pprof() {
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    return 0
+  fi
+  awk '
+    BEGIN { in_dbg=0 }
+    /^[[:space:]]*debug:[[:space:]]*$/ { in_dbg=1; next }
+    in_dbg && /^[^[:space:]][^:]*:/ { in_dbg=0 }
+    in_dbg && /^[[:space:]]*pprof:[[:space:]]*/ {
+      line=$0
+      sub(/^[[:space:]]*pprof:[[:space:]]*/, "", line)
+      sub(/[[:space:]]+#.*/, "", line)
+      gsub(/^"/, "", line); gsub(/"$/, "", line)
+      print line
+      exit
+    }
+  ' "${CONFIG_FILE}" 2>/dev/null || true
+}
+
+set_log_level() {
+  local level="$1"
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}"
+    return 1
+  fi
+  local tmp
+  tmp="$(mktemp)"
+  awk -v lvl="${level}" '
+    BEGIN { in_log=0 }
+    /^[[:space:]]*log:[[:space:]]*$/ { in_log=1; print; next }
+    in_log && /^[^[:space:]][^:]*:/ { in_log=0 }
+    in_log && /^[[:space:]]*level:[[:space:]]*/ { print "  level: \"" lvl "\""; next }
+    { print }
+  ' "${CONFIG_FILE}" >"${tmp}"
+  mv "${tmp}" "${CONFIG_FILE}"
+  chmod 600 "${CONFIG_FILE}" || true
+  systemctl restart "${SERVICE_NAME}" || true
+  return 0
+}
+
+set_snaplen() {
+  local snaplen="$1"
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}"
+    return 1
+  fi
+  # Best-effort: update any existing snaplen line. If absent, defaults apply in paqet.
+  sed -i -E "s/^([[:space:]]*snaplen:)[[:space:]]*[0-9]+/\\1 ${snaplen}/" "${CONFIG_FILE}" || true
+  chmod 600 "${CONFIG_FILE}" || true
+  systemctl restart "${SERVICE_NAME}" || true
+  return 0
+}
+
+set_debug_endpoints() {
+  local enable="$1" pprof="${2:-${DEBUG_PPROF_DEFAULT}}"
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    msg "کانفیگ پیدا نشد: ${CONFIG_FILE}"
+    return 1
+  fi
+
+  local diag="false"
+  local pprof_line="\"\""
+  if [[ "${enable}" == "true" ]]; then
+    diag="true"
+    pprof_line="\"${pprof}\""
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  awk -v pprof="${pprof_line}" -v diag="${diag}" '
+    BEGIN { in_dbg=0; saw_dbg=0; wrote_pprof=0; wrote_diag=0; in_log=0; inserted=0 }
+    /^[[:space:]]*log:[[:space:]]*$/ { in_log=1; print; next }
+    in_log && /^[^[:space:]][^:]*:/ {
+      in_log=0
+      # Insert debug block right after log block if we have not seen it yet.
+      if (saw_dbg == 0 && inserted == 0) {
+        print ""
+        print "debug:"
+        print "  pprof: " pprof
+        print "  diag: " diag
+        inserted=1
+      }
+      # fallthrough to process current line
+    }
+    /^[[:space:]]*debug:[[:space:]]*$/ { in_dbg=1; saw_dbg=1; print; next }
+    in_dbg && /^[^[:space:]][^:]*:/ {
+      # leaving debug block: ensure keys exist
+      if (wrote_pprof == 0) { print "  pprof: " pprof }
+      if (wrote_diag == 0)  { print "  diag: " diag }
+      in_dbg=0
+      # continue processing this top-level line
+    }
+    in_dbg && /^[[:space:]]*pprof:[[:space:]]*/ { print "  pprof: " pprof; wrote_pprof=1; next }
+    in_dbg && /^[[:space:]]*diag:[[:space:]]*/  { print "  diag: " diag; wrote_diag=1; next }
+    { print }
+    END {
+      if (in_dbg == 1) {
+        if (wrote_pprof == 0) { print "  pprof: " pprof }
+        if (wrote_diag == 0)  { print "  diag: " diag }
+      }
+      if (saw_dbg == 0 && inserted == 0) {
+        print ""
+        print "debug:"
+        print "  pprof: " pprof
+        print "  diag: " diag
+      }
+    }
+  ' "${CONFIG_FILE}" >"${tmp}"
+  mv "${tmp}" "${CONFIG_FILE}"
+  chmod 600 "${CONFIG_FILE}" || true
+  systemctl restart "${SERVICE_NAME}" || true
+  return 0
+}
+
+show_debug_status() {
+  local pprof
+  pprof="$(detect_cfg_pprof || true)"
+  if [[ -z "${pprof}" ]]; then
+    pprof="${DEBUG_PPROF_DEFAULT}"
+  fi
+  if ! curl -fsS "http://${pprof}/debug/paqet/text" 2>/dev/null | textbox "${APP} debug status" 22 78; then
+    msg "به /debug/paqet/text دسترسی ندارم.\n\nاول از منو Debug رو فعال کن (pprof+diag) و دوباره تلاش کن.\n\npprof: ${pprof}"
+  fi
+}
+
+follow_journal() {
+  clear
+  echo "journalctl -u ${SERVICE_NAME} -f"
+  echo "Press Ctrl+C to stop and return."
+  echo
+  journalctl -u "${SERVICE_NAME}" -f --no-pager || true
+  stty sane >/dev/null 2>&1 || true
+}
+
+support_report() {
+  local ts out iface pprof
+  ts="$(date +%Y%m%d-%H%M%S)"
+  out="/tmp/paqet-support-${ts}.txt"
+  iface="$(detect_cfg_iface || true)"
+  if [[ -z "${iface}" ]]; then
+    iface="$(detect_default_iface || true)"
+  fi
+  pprof="$(detect_cfg_pprof || true)"
+  if [[ -z "${pprof}" ]]; then
+    pprof="${DEBUG_PPROF_DEFAULT}"
+  fi
+
+  {
+    echo "=== HOST ==="
+    hostname
+    date -Is
+    uname -a
+    echo
+
+    echo "=== PAQET VERSION ==="
+    "${BIN}" version 2>&1 || true
+    echo
+
+    echo "=== CONFIG (key/password redacted) ==="
+    redact_config
+    echo
+
+    echo "=== SYSTEMD STATUS ==="
+    systemctl status "${SERVICE_NAME}" --no-pager -l || true
+    echo
+
+    echo "=== JOURNAL (last 200) ==="
+    journalctl -u "${SERVICE_NAME}" -n 200 --no-pager || true
+    echo
+
+    echo "=== LISTEN (TCP) ==="
+    ss -lntpH 2>/dev/null || true
+    echo
+
+    echo "=== IPTABLES (relevant) ==="
+    iptables -t raw -S 2>/dev/null | grep -E "NOTRACK" || true
+    iptables -t mangle -S 2>/dev/null | grep -E "tcp-flags RST RST" || true
+    echo
+
+    echo "=== NET (iface=${iface}) ==="
+    if [[ -n "${iface}" ]]; then
+      ip -br addr show dev "${iface}" 2>/dev/null || true
+      ip -s link show dev "${iface}" 2>/dev/null || true
+    else
+      ip -br addr 2>/dev/null || true
+      ip -s link 2>/dev/null || true
+    fi
+    echo
+
+    if command -v ethtool >/dev/null 2>&1 && [[ -n "${iface}" ]]; then
+      echo "=== OFFLOADS (${iface}) ==="
+      ethtool -k "${iface}" 2>/dev/null | egrep -i '(gro|lro|gso|tso|rx|tx|scatter|segmentation|udp)' || true
+      echo
+    fi
+
+    echo "=== DEBUG (/debug/paqet/text) ==="
+    curl -fsS "http://${pprof}/debug/paqet/text" 2>/dev/null || echo "(debug endpoints not reachable)"
+    echo
+  } >"${out}" 2>&1 || true
+
+  msg "گزارش ساخته شد:\n${out}\n\nبرای ارسال به من، این دستور رو بزن و خروجی رو کپی کن:\n\nsudo cat ${out}"
+}
+
+diagnostics_loop() {
+  while true; do
+    local choice
+    choice="$(menu "${APP}" "Diagnostics / Debug:" \
+      "1" "Generate support report (easy copy/paste)" \
+      "2" "Show config (redacted)" \
+      "3" "Show journal (last 200)" \
+      "4" "Follow journal (Ctrl+C)" \
+      "5" "Set log level (info/debug)" \
+      "6" "Enable debug endpoints (pprof+diag)" \
+      "7" "Disable debug endpoints" \
+      "8" "Show /debug/paqet/status (text)" \
+      "9" "Set snaplen=65535 + restart" \
+      "0" "Back")" || return 0
+
+    case "${choice}" in
+      1) support_report ;;
+      2) redact_config | textbox "${APP} config" 22 78 ;;
+      3) journalctl -u "${SERVICE_NAME}" -n 200 --no-pager | textbox "${APP} journal" 22 78 ;;
+      4) follow_journal ;;
+      5)
+        local lvl
+        lvl="$(menu "${APP}" "Log level:" \
+          "warn" "کمترین لاگ (پیش‌فرض)" \
+          "info" "برای دیباگ اتصال/فوروارد" \
+          "debug" "خیلی زیاد (فقط موقت)")" || continue
+        set_log_level "${lvl}" || true
+        ;;
+      6) set_debug_endpoints "true" "${DEBUG_PPROF_DEFAULT}" || true ;;
+      7) set_debug_endpoints "false" "" || true ;;
+      8) show_debug_status ;;
+      9) set_snaplen "65535" || true ;;
+      0) return 0 ;;
+    esac
+  done
+}
+
 set_forward_single_rule() {
   # Replace the entire top-level "forward:" block with a single TCP rule.
   # This keeps the setup predictable and avoids duplicate YAML keys.
@@ -702,6 +974,7 @@ main_loop() {
       "1" "ستاپ سرور خارج (Server)" \
       "15" "Setup inside (X-UI only, one-step, no SOCKS)" \
       "3" "Status" \
+      "4" "Diagnostics / Debug" \
       "6" "Stop service" \
       "7" "Uninstall (keep binaries)" \
       "13" "Purge (remove everything)" \
@@ -711,6 +984,7 @@ main_loop() {
       1) setup_outside_server ;;
       15) setup_inside_xui_only ;;
       3) status_screen ;;
+      4) diagnostics_loop ;;
       6) systemctl stop "${SERVICE_NAME}" || true ;;
       7) uninstall_all ;;
       13) purge_all ;;

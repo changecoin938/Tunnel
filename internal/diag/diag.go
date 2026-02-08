@@ -45,6 +45,17 @@ var rawDownBytes atomic.Uint64
 var rawLastUpAt atomic.Int64   // unix nano
 var rawLastDownAt atomic.Int64 // unix nano
 
+// rawDownOversize* tracks frames we captured but dropped because they exceeded the
+// receiver buffer size expected by kcp-go (mtuLimit=1500). With GRO/LRO this can
+// happen if the kernel coalesces multiple segments and the tunnel can't split them.
+var rawDownOversizeDrops atomic.Uint64
+var rawDownOversizeDropBytes atomic.Uint64
+
+// rawDownCoalesced* tracks TCP payload coalescing events (GRO/LRO) that we detected
+// and split into individual guarded packets.
+var rawDownCoalescedFrames atomic.Uint64
+var rawDownCoalescedParts atomic.Uint64
+
 var guardPass atomic.Uint64
 var guardDrops atomic.Uint64
 
@@ -78,6 +89,12 @@ type Status struct {
 	RawDownBytes   uint64     `json:"raw_down_bytes"`
 	RawLastUpAt    *time.Time `json:"raw_last_up_at,omitempty"`
 	RawLastDownAt  *time.Time `json:"raw_last_down_at,omitempty"`
+
+	RawDownOversizeDrops     uint64 `json:"raw_down_oversize_drops"`
+	RawDownOversizeDropBytes uint64 `json:"raw_down_oversize_drop_bytes"`
+
+	RawDownCoalescedFrames uint64 `json:"raw_down_coalesced_frames"`
+	RawDownCoalescedParts  uint64 `json:"raw_down_coalesced_parts"`
 
 	GuardPass  uint64 `json:"guard_pass"`
 	GuardDrops uint64 `json:"guard_drops"`
@@ -149,6 +166,28 @@ func AddRawDown(n int) {
 		rawDownPackets.Add(1)
 		rawDownBytes.Add(uint64(n))
 		rawLastDownAt.Store(time.Now().UnixNano())
+	}
+}
+
+func AddRawDownOversizeDrop(n int) {
+	if !enabled {
+		return
+	}
+	rawDownOversizeDrops.Add(1)
+	if n > 0 {
+		rawDownOversizeDropBytes.Add(uint64(n))
+		// Keep RawLastDownAt meaningful even if everything is dropped.
+		rawLastDownAt.Store(time.Now().UnixNano())
+	}
+}
+
+func AddRawDownCoalesced(parts int) {
+	if !enabled {
+		return
+	}
+	rawDownCoalescedFrames.Add(1)
+	if parts > 0 {
+		rawDownCoalescedParts.Add(uint64(parts))
 	}
 }
 
@@ -226,13 +265,19 @@ func Snapshot() Status {
 		RawDownPackets: rawDownPackets.Load(),
 		RawUpBytes:     rawUpBytes.Load(),
 		RawDownBytes:   rawDownBytes.Load(),
-		GuardPass:      guardPass.Load(),
-		GuardDrops:     guardDrops.Load(),
-		TCPUpBytes:     tcpUpBytes.Load(),
-		TCPDownBytes:   tcpDownBytes.Load(),
-		UDPUpBytes:     udpUpBytes.Load(),
-		UDPDownBytes:   udpDownBytes.Load(),
-		Goroutines:     runtime.NumGoroutine(),
+
+		RawDownOversizeDrops:     rawDownOversizeDrops.Load(),
+		RawDownOversizeDropBytes: rawDownOversizeDropBytes.Load(),
+		RawDownCoalescedFrames:   rawDownCoalescedFrames.Load(),
+		RawDownCoalescedParts:    rawDownCoalescedParts.Load(),
+
+		GuardPass:    guardPass.Load(),
+		GuardDrops:   guardDrops.Load(),
+		TCPUpBytes:   tcpUpBytes.Load(),
+		TCPDownBytes: tcpDownBytes.Load(),
+		UDPUpBytes:   udpUpBytes.Load(),
+		UDPDownBytes: udpDownBytes.Load(),
+		Goroutines:   runtime.NumGoroutine(),
 	}
 	if v := cfg.Load(); v != nil {
 		s.Config = *v.(*ConfigInfo)
@@ -299,6 +344,8 @@ func FormatText(s Status) string {
 			"  bytes: up=%d  down=%d\n"+
 			"    raw: packets up=%d  down=%d\n"+
 			"    raw: bytes   up=%d  down=%d  last_up=%s  last_down=%s\n"+
+			"    raw: coalesced frames=%d parts=%d\n"+
+			"    raw: oversize drops=%d bytes=%d\n"+
 			"    guard: pass=%d  drops=%d\n"+
 			"    tcp: up=%d  down=%d\n"+
 			"    udp: up=%d  down=%d\n"+
@@ -312,6 +359,8 @@ func FormatText(s Status) string {
 		totalUp, totalDown,
 		s.RawUpPackets, s.RawDownPackets,
 		s.RawUpBytes, s.RawDownBytes, rawLastUp, rawLastDown,
+		s.RawDownCoalescedFrames, s.RawDownCoalescedParts,
+		s.RawDownOversizeDrops, s.RawDownOversizeDropBytes,
 		s.GuardPass, s.GuardDrops,
 		s.TCPUpBytes, s.TCPDownBytes,
 		s.UDPUpBytes, s.UDPDownBytes,

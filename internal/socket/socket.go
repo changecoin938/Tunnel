@@ -165,6 +165,11 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 		if len(payload) > len(data) {
 			// Never silently truncate. Also, never return an error here because kcp-go treats
 			// ReadFrom errors as fatal. Drop and let KCP recover via retransmit.
+			rawCount := len(payload)
+			if c.guard != nil {
+				rawCount += guardHeaderLen
+			}
+			diag.AddRawDownOversizeDrop(rawCount)
 			continue
 		}
 		n = copy(data, payload)
@@ -282,6 +287,7 @@ func (c *PacketConn) enqueueCoalesced(payload []byte, addr net.Addr, g *guardSta
 	}
 
 	// Stash for subsequent ReadFrom calls.
+	diag.AddRawDownCoalesced(len(parts))
 	c.pendingBuf = buf
 	c.pending = append(c.pending[:0], parts...)
 	c.pendingAddr = addr
