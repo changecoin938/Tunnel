@@ -34,6 +34,7 @@ if [[ "${1:-}" == "purge" || "${1:-}" == "uninstall" ]]; then
 
   BIN="/usr/local/bin/paqet"
   UI="/usr/local/bin/paqet-ui"
+  ROOTCAUSE="/usr/local/bin/paqet-rootcause"
   LIB_DIR="/usr/local/lib/paqet"
   IPT_SH="${LIB_DIR}/paqet-iptables.sh"
   IPT_SYSTEMD_SH="${LIB_DIR}/paqet-systemd-iptables.sh"
@@ -71,6 +72,7 @@ if [[ "${1:-}" == "purge" || "${1:-}" == "uninstall" ]]; then
   fi
 
   rm -f "${BIN}" "${UI}" || true
+  rm -f "${ROOTCAUSE}" || true
   rm -rf "${LIB_DIR}" || true
 
   echo "OK: paqet purged."
@@ -121,6 +123,11 @@ if [[ -f "${tmp}/scripts/paqet-ui" ]]; then
 else
   echo "WARN: scripts/paqet-ui not found in release tarball." >&2
 fi
+if [[ -f "${tmp}/scripts/paqet-rootcause" ]]; then
+  install -m 0755 "${tmp}/scripts/paqet-rootcause" /usr/local/bin/paqet-rootcause
+else
+  echo "WARN: scripts/paqet-rootcause not found in release tarball." >&2
+fi
 if [[ -f "${tmp}/scripts/paqet-iptables.sh" ]]; then
   install -m 0755 "${tmp}/scripts/paqet-iptables.sh" /usr/local/lib/paqet/paqet-iptables.sh
 else
@@ -146,4 +153,3 @@ fi
 
 echo "No interactive TTY available. Run: sudo paqet-ui" >&2
 exit 1
-

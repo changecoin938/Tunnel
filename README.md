@@ -256,6 +256,16 @@ sudo ./paqet <command> [arguments]
 | `dump`    | A diagnostic tool similar to `tcpdump` that captures and decodes packets.        |
 | `version` | Prints the application's version information.                                    |
 
+## Support Bundle (Linux)
+
+If you installed via `install.sh`, you can collect a redacted support bundle on the server:
+
+```bash
+sudo paqet-rootcause
+```
+
+It writes output to `/tmp/paqet-rootcause-<host>-<timestamp>.txt`.
+
 ## Configuration Reference
 
 paqet uses a unified YAML configuration that works for both clients and servers. The `role` field must be explicitly set to either `"client"` or `"server"`.
