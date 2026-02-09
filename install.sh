@@ -28,6 +28,10 @@ if [[ "${1:-}" == "purge" || "${1:-}" == "uninstall" ]]; then
   CONFIG_FILE="${CONFIG_DIR}/config.yaml"
   SYSCTL_CONF="/etc/sysctl.d/99-paqet.conf"
 
+  WATCHDOG_SCRIPT="/usr/local/bin/paqet-watchdog"
+  WATCHDOG_SERVICE_FILE="/etc/systemd/system/paqet-watchdog.service"
+  WATCHDOG_TIMER_FILE="/etc/systemd/system/paqet-watchdog.timer"
+
   BIN="/usr/local/bin/paqet"
   UI="/usr/local/bin/paqet-ui"
   LIB_DIR="/usr/local/lib/paqet"
@@ -36,6 +40,7 @@ if [[ "${1:-}" == "purge" || "${1:-}" == "uninstall" ]]; then
 
   # Stop/disable service (best-effort)
   if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now paqet-watchdog.timer 2>/dev/null || true
     systemctl stop "${SERVICE}" 2>/dev/null || true
     systemctl disable "${SERVICE}" 2>/dev/null || true
   fi
@@ -53,6 +58,7 @@ if [[ "${1:-}" == "purge" || "${1:-}" == "uninstall" ]]; then
 
   # Remove files
   rm -f "${SERVICE_FILE}" || true
+  rm -f "${WATCHDOG_TIMER_FILE}" "${WATCHDOG_SERVICE_FILE}" "${WATCHDOG_SCRIPT}" || true
   if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload 2>/dev/null || true
     systemctl reset-failed "${SERVICE}" 2>/dev/null || true
@@ -140,5 +146,4 @@ fi
 
 echo "No interactive TTY available. Run: sudo paqet-ui" >&2
 exit 1
-
 

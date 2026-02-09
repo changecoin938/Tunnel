@@ -39,6 +39,10 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 SYSCTL_CONF="/etc/sysctl.d/99-paqet.conf"
 
+WATCHDOG_SCRIPT="/usr/local/bin/paqet-watchdog"
+WATCHDOG_SERVICE_FILE="/etc/systemd/system/paqet-watchdog.service"
+WATCHDOG_TIMER_FILE="/etc/systemd/system/paqet-watchdog.timer"
+
 # rand_alnum prints a random alphanumeric string of length N (default 24).
 rand_alnum() {
   local n="${1:-24}"
@@ -475,6 +479,66 @@ EOF
   sysctl --system >/dev/null 2>&1 || true
 }
 
+install_watchdog() {
+  # A lightweight guard to bring paqet back if it is stopped/failed by anything
+  # (cron, operator mistake, transient OOM, etc.). It never restarts an active service.
+  cat >"${WATCHDOG_SCRIPT}" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+svc="paqet"
+
+en="$(systemctl is-enabled "${svc}" 2>/dev/null || true)"
+case "${en}" in
+  disabled|masked) exit 0 ;;
+esac
+
+st="$(systemctl is-active "${svc}" 2>/dev/null || true)"
+case "${st}" in
+  active|activating|deactivating) exit 0 ;;
+esac
+
+logger -t paqet-watchdog "paqet state=${st}; reset-failed + restart"
+systemctl reset-failed "${svc}" >/dev/null 2>&1 || true
+systemctl restart "${svc}" >/dev/null 2>&1 || true
+SH
+  chmod 0755 "${WATCHDOG_SCRIPT}" || true
+
+  cat >"${WATCHDOG_SERVICE_FILE}" <<'UNIT'
+[Unit]
+Description=Watchdog: keep paqet.service running
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/paqet-watchdog
+UNIT
+
+  cat >"${WATCHDOG_TIMER_FILE}" <<'TIMER'
+[Unit]
+Description=Run paqet watchdog periodically
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=45s
+AccuracySec=5s
+Unit=paqet-watchdog.service
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now paqet-watchdog.timer >/dev/null 2>&1 || true
+}
+
+remove_watchdog() {
+  systemctl disable --now paqet-watchdog.timer >/dev/null 2>&1 || true
+  rm -f "${WATCHDOG_TIMER_FILE}" "${WATCHDOG_SERVICE_FILE}" "${WATCHDOG_SCRIPT}" || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
 install_service() {
   mkdir -p "${CONFIG_DIR}" "${LIB_DIR}"
 
@@ -514,6 +578,7 @@ EOF
 
   systemctl daemon-reload
   systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  install_watchdog
 }
 
 start_service() {
@@ -1200,6 +1265,7 @@ uninstall_all() {
 
   # Stop service first (ExecStopPost may remove iptables rules).
   systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  remove_watchdog
 
   # Best-effort: remove server-side iptables rules explicitly.
   if [[ -x "${IPTABLES_SYSTEMD_SH}" ]]; then
@@ -1223,6 +1289,7 @@ purge_all() {
   fi
 
   systemctl stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  remove_watchdog
   if [[ -x "${IPTABLES_SYSTEMD_SH}" ]]; then
     "${IPTABLES_SYSTEMD_SH}" remove "${CONFIG_FILE}" || true
   fi
