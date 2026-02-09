@@ -17,5 +17,3 @@ func startPprof(addr string) {
 		}
 	}()
 }
-
-

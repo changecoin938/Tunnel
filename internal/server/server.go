@@ -17,8 +17,8 @@ import (
 )
 
 type Server struct {
-	cfg   *conf.Conf
-	wg    sync.WaitGroup
+	cfg *conf.Conf
+	wg  sync.WaitGroup
 
 	sessSem              chan struct{}
 	streamSem            chan struct{}
@@ -89,14 +89,14 @@ func (s *Server) Start() error {
 		if err != nil {
 			pConn.Close()
 			return fmt.Errorf("could not start KCP listener (port=%d): %w", netCfg.Port, err)
-			}
-			listeners = append(listeners, l)
-
-			listener := l
-			s.wg.Go(func() {
-				s.listen(ctx, listener)
-			})
 		}
+		listeners = append(listeners, l)
+
+		listener := l
+		s.wg.Go(func() {
+			s.listen(ctx, listener)
+		})
+	}
 	defer func() {
 		for _, l := range listeners {
 			_ = l.Close()

@@ -31,7 +31,20 @@ func LoadFromFile(path string) (*Conf, error) {
 	var conf Conf
 
 	if err := yaml.Unmarshal(data, &conf); err != nil {
-		return &conf, err
+		repaired, changed, repairReason := tryRepairConfig(data)
+		if !changed {
+			return &conf, err
+		}
+
+		var repairedConf Conf
+		if err2 := yaml.Unmarshal(repaired, &repairedConf); err2 != nil {
+			// Repair attempt didn't help; surface original error.
+			return &conf, err
+		}
+
+		// Best-effort persistence so systemd restarts don't keep failing.
+		_ = persistRepairedConfig(path, data, repaired, repairReason)
+		conf = repairedConf
 	}
 
 	validRoles := []string{"client", "server"}

@@ -13,10 +13,10 @@ import (
 )
 
 type Conn struct {
-	PacketConn *socket.PacketConn
+	PacketConn    *socket.PacketConn
 	OwnPacketConn bool
-	UDPSession *kcp.UDPSession
-	Session    *smux.Session
+	UDPSession    *kcp.UDPSession
+	Session       *smux.Session
 }
 
 func (c *Conn) OpenStrm() (tnet.Strm, error) {
