@@ -333,10 +333,18 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 
 	// Under heavy bursts, pcap injection can transiently fail with ENOBUFS.
 	// For KCP this should be treated like packet loss, not a fatal connection error.
-	// We do a small bounded retry to smooth bursts, then drop (report success) so
-	// upper layers can recover via retransmit/backpressure.
+	// We do a bounded retry to smooth bursts, then drop (report success) so upper
+	// layers can recover via retransmit/backpressure.
+	//
+	// Note: returning a non-nil error here will cause kcp-go to tear down the
+	// session. For transient ENOBUFS/ENOMEM we must keep the session alive.
+	const (
+		maxTotalSleep = 50 * time.Millisecond
+		maxBackoff    = 20 * time.Millisecond
+	)
 	backoff := 200 * time.Microsecond
-	for attempt := 0; ; attempt++ {
+	var totalSlept time.Duration
+	for {
 		if prefix != nil {
 			err = c.sendHandle.WriteParts(prefix, data, daddr)
 		} else {
@@ -355,8 +363,8 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 			return 0, err
 		}
 
-		// ENOBUFS/ENOMEM: bounded retry, then drop.
-		if attempt >= 5 {
+		// ENOBUFS/ENOMEM: bounded retry, then drop (as loss).
+		if totalSlept >= maxTotalSleep {
 			diag.AddRawUpDrop(wireLen)
 			return len(data), nil
 		}
@@ -368,9 +376,14 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 			return 0, os.ErrDeadlineExceeded
 		default:
 		}
+
 		time.Sleep(backoff)
-		if backoff < 5*time.Millisecond {
+		totalSlept += backoff
+		if backoff < maxBackoff {
 			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}
 }
