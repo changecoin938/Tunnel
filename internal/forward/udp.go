@@ -2,12 +2,14 @@ package forward
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"paqet/internal/tnet"
+	"syscall"
 	"time"
 )
 
@@ -109,9 +111,22 @@ func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) e
 		return err
 	}
 
-	_, err = src.WriteToUDP(buf[:n], addr)
-	if err == nil {
-		diag.AddUDPDown(int64(n))
+	backoff := 200 * time.Microsecond
+	for attempt := 0; attempt < 5; attempt++ {
+		_, err = src.WriteToUDP(buf[:n], addr)
+		if err == nil {
+			diag.AddUDPDown(int64(n))
+			return nil
+		}
+		if errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+			time.Sleep(backoff)
+			if backoff < 5*time.Millisecond {
+				backoff *= 2
+			}
+			continue
+		}
+		return err
 	}
-	return err
+	// Treat persistent ENOBUFS/ENOMEM as packet loss for UDP to avoid tearing down the stream.
+	return nil
 }

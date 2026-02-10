@@ -49,6 +49,8 @@ var rawUpBytes atomic.Uint64
 var rawDownBytes atomic.Uint64
 var rawLastUpAt atomic.Int64   // unix nano
 var rawLastDownAt atomic.Int64 // unix nano
+var rawUpDrops atomic.Uint64
+var rawUpDropBytes atomic.Uint64
 
 // rawDownOversize* tracks frames we captured but dropped because they exceeded the
 // receiver buffer size expected by kcp-go (mtuLimit=1500). With GRO/LRO this can
@@ -94,6 +96,8 @@ type Status struct {
 	RawDownBytes   uint64     `json:"raw_down_bytes"`
 	RawLastUpAt    *time.Time `json:"raw_last_up_at,omitempty"`
 	RawLastDownAt  *time.Time `json:"raw_last_down_at,omitempty"`
+	RawUpDrops     uint64     `json:"raw_up_drops"`
+	RawUpDropBytes uint64     `json:"raw_up_drop_bytes"`
 
 	RawDownOversizeDrops     uint64 `json:"raw_down_oversize_drops"`
 	RawDownOversizeDropBytes uint64 `json:"raw_down_oversize_drop_bytes"`
@@ -160,6 +164,16 @@ func AddRawUp(n int) {
 		rawUpPackets.Add(1)
 		rawUpBytes.Add(uint64(n))
 		rawLastUpAt.Store(time.Now().UnixNano())
+	}
+}
+
+func AddRawUpDrop(n int) {
+	if !enabled {
+		return
+	}
+	rawUpDrops.Add(1)
+	if n > 0 {
+		rawUpDropBytes.Add(uint64(n))
 	}
 }
 
@@ -270,6 +284,8 @@ func Snapshot() Status {
 		RawDownPackets: rawDownPackets.Load(),
 		RawUpBytes:     rawUpBytes.Load(),
 		RawDownBytes:   rawDownBytes.Load(),
+		RawUpDrops:     rawUpDrops.Load(),
+		RawUpDropBytes: rawUpDropBytes.Load(),
 
 		RawDownOversizeDrops:     rawDownOversizeDrops.Load(),
 		RawDownOversizeDropBytes: rawDownOversizeDropBytes.Load(),
@@ -349,6 +365,7 @@ func FormatText(s Status) string {
 			"  bytes: up=%d  down=%d\n"+
 			"    raw: packets up=%d  down=%d\n"+
 			"    raw: bytes   up=%d  down=%d  last_up=%s  last_down=%s\n"+
+			"    raw: drops  packets=%d bytes=%d\n"+
 			"    raw: coalesced frames=%d parts=%d\n"+
 			"    raw: oversize drops=%d bytes=%d\n"+
 			"    guard: pass=%d  drops=%d\n"+
@@ -364,6 +381,7 @@ func FormatText(s Status) string {
 		totalUp, totalDown,
 		s.RawUpPackets, s.RawDownPackets,
 		s.RawUpBytes, s.RawDownBytes, rawLastUp, rawLastDown,
+		s.RawUpDrops, s.RawUpDropBytes,
 		s.RawDownCoalescedFrames, s.RawDownCoalescedParts,
 		s.RawDownOversizeDrops, s.RawDownOversizeDropBytes,
 		s.GuardPass, s.GuardDrops,

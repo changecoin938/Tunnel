@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"paqet/internal/diag"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -317,22 +319,54 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	}
 
 	wireLen := len(data)
+
+	var prefix []byte
+	var hdr [guardHeaderLen]byte
 	if g := c.guard; g != nil {
-		var hdr [guardHeaderLen]byte
 		copy(hdr[0:4], g.magic[:])
 		cookies := g.getCookies()
 		copy(hdr[4:12], cookies.cookies[0][:])
+		prefix = hdr[:]
 		wireLen += guardHeaderLen
-		err = c.sendHandle.WriteParts(hdr[:], data, daddr)
-	} else {
-		err = c.sendHandle.Write(data, daddr)
-	}
-	if err != nil {
-		return 0, err
 	}
 
-	diag.AddRawUp(wireLen)
-	return len(data), nil
+	// Under heavy bursts, pcap injection can transiently fail with ENOBUFS.
+	// For KCP this should be treated like packet loss, not a fatal connection error.
+	// We do a small bounded retry to smooth bursts, then drop (report success) so
+	// upper layers can recover via retransmit/backpressure.
+	backoff := 200 * time.Microsecond
+	for attempt := 0; ; attempt++ {
+		if prefix != nil {
+			err = c.sendHandle.WriteParts(prefix, data, daddr)
+		} else {
+			err = c.sendHandle.Write(data, daddr)
+		}
+		if err == nil {
+			diag.AddRawUp(wireLen)
+			return len(data), nil
+		}
+		if !errors.Is(err, syscall.ENOBUFS) && !errors.Is(err, syscall.ENOMEM) {
+			return 0, err
+		}
+
+		// ENOBUFS/ENOMEM: bounded retry, then drop.
+		if attempt >= 5 {
+			diag.AddRawUpDrop(wireLen)
+			return len(data), nil
+		}
+
+		select {
+		case <-c.ctx.Done():
+			return 0, c.ctx.Err()
+		case <-deadline:
+			return 0, os.ErrDeadlineExceeded
+		default:
+		}
+		time.Sleep(backoff)
+		if backoff < 5*time.Millisecond {
+			backoff *= 2
+		}
+	}
 }
 
 func (c *PacketConn) Close() error {
