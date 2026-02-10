@@ -9,6 +9,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"paqet/internal/tnet"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -118,7 +119,10 @@ func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) e
 			diag.AddUDPDown(int64(n))
 			return nil
 		}
-		if errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+		if errors.Is(err, syscall.ENOBUFS) ||
+			errors.Is(err, syscall.ENOMEM) ||
+			strings.Contains(err.Error(), "No buffer space available") ||
+			strings.Contains(err.Error(), "Cannot allocate memory") {
 			time.Sleep(backoff)
 			if backoff < 5*time.Millisecond {
 				backoff *= 2

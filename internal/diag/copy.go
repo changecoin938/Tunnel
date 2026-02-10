@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"paqet/internal/pkg/buffer"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -99,7 +100,10 @@ func writeFullWithRetry(dst io.Writer, p []byte) (int, error) {
 
 		// ENOBUFS/ENOMEM can be transient under kernel network memory pressure.
 		// Treat it as retryable with bounded backoff to avoid tearing down streams.
-		if errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+		if errors.Is(err, syscall.ENOBUFS) ||
+			errors.Is(err, syscall.ENOMEM) ||
+			strings.Contains(err.Error(), "No buffer space available") ||
+			strings.Contains(err.Error(), "Cannot allocate memory") {
 			if totalSlept >= maxTotalSleep {
 				return written, err
 			}

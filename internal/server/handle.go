@@ -13,6 +13,8 @@ import (
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
 	tkcp "paqet/internal/tnet/kcp"
+	"strings"
+	"syscall"
 	"time"
 )
 
@@ -31,6 +33,14 @@ func streamErrIsBenign(err error) bool {
 	}
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	if errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+		return true
+	}
+	// Some send paths (libpcap via pcap_geterr) return plain string errors without errno.
+	if strings.Contains(err.Error(), "No buffer space available") ||
+		strings.Contains(err.Error(), "Cannot allocate memory") {
 		return true
 	}
 	return false

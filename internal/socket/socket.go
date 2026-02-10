@@ -11,6 +11,7 @@ import (
 	"os"
 	"paqet/internal/conf"
 	"paqet/internal/diag"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -345,7 +346,12 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 			diag.AddRawUp(wireLen)
 			return len(data), nil
 		}
-		if !errors.Is(err, syscall.ENOBUFS) && !errors.Is(err, syscall.ENOMEM) {
+		// libpcap returns plain string errors via pcap_geterr (no errno), so also
+		// match by message to detect ENOBUFS/ENOMEM.
+		if !errors.Is(err, syscall.ENOBUFS) &&
+			!errors.Is(err, syscall.ENOMEM) &&
+			!strings.Contains(err.Error(), "No buffer space available") &&
+			!strings.Contains(err.Error(), "Cannot allocate memory") {
 			return 0, err
 		}
 
