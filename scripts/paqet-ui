@@ -207,11 +207,11 @@ pick_streambuf() {
   local mem
   mem="$(detect_mem_total_mb)"
   if (( mem > 0 && mem < 8192 )); then
-    echo $(( 256 * 1024 ))
+    echo $(( 128 * 1024 ))
   elif (( mem > 0 && mem < 16384 )); then
-    echo $(( 512 * 1024 ))
+    echo $(( 256 * 1024 ))
   else
-    echo $(( 1024 * 1024 ))
+    echo $(( 512 * 1024 ))
   fi
 }
 
@@ -1319,7 +1319,7 @@ gen_server_config() {
   if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then conn=1; fi
   if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
   if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((256*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((128*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "server"
 
@@ -1378,7 +1378,7 @@ gen_client_config_no_socks() {
   fi
   if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
   if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((256*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((128*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "client"
 

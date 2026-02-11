@@ -126,9 +126,9 @@ func (k *KCP) setDefaults(role string) {
 	if k.Streambuf == 0 {
 		// Keep conservative for high-concurrency (500-1000 users). Each user opens
 		// many streams (browser tabs, apps), so 25k+ streams are common. With 4GB
-		// RAM, 256KB per stream keeps memory manageable while providing adequate
+		// RAM, 128KB per stream keeps memory manageable while providing adequate
 		// per-stream throughput for web browsing / messaging workloads.
-		k.Streambuf = 256 * 1024
+		k.Streambuf = 128 * 1024
 	}
 }
 

@@ -98,7 +98,7 @@ transport:
 
     # Buffer settings (optional)
     # smuxbuf: 4194304       # 4MB SMUX buffer
-    # streambuf: 524288      # 512KB stream buffer (recommended: avoids OOM with many streams)
+    # streambuf: 131072      # 128KB stream buffer (recommended for 4GB RAM + many streams)
 
 # Optional Forward Error Correction (FEC) - currently disabled
 # Use these only if you need FEC for very lossy networks:

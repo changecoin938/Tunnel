@@ -5,51 +5,36 @@ import (
 	"io"
 	"paqet/internal/pkg/buffer"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
 
 func CopyTCPUp(dst io.Writer, src io.Reader) error {
-	bufp := buffer.TPool.Get().(*[]byte)
-	defer buffer.TPool.Put(bufp)
-	buf := *bufp
-
-	n, err := copyWithWriteRetry(dst, src, buf)
+	n, err := copyWithWriteRetry(dst, src, &buffer.TPool)
 	AddTCPUp(n)
 	return err
 }
 
 func CopyTCPDown(dst io.Writer, src io.Reader) error {
-	bufp := buffer.TPool.Get().(*[]byte)
-	defer buffer.TPool.Put(bufp)
-	buf := *bufp
-
-	n, err := copyWithWriteRetry(dst, src, buf)
+	n, err := copyWithWriteRetry(dst, src, &buffer.TPool)
 	AddTCPDown(n)
 	return err
 }
 
 func CopyUDPUp(dst io.Writer, src io.Reader) error {
-	bufp := buffer.UPool.Get().(*[]byte)
-	defer buffer.UPool.Put(bufp)
-	buf := *bufp
-
-	n, err := copyWithWriteRetry(dst, src, buf)
+	n, err := copyWithWriteRetry(dst, src, &buffer.UPool)
 	AddUDPUp(n)
 	return err
 }
 
 func CopyUDPDown(dst io.Writer, src io.Reader) error {
-	bufp := buffer.UPool.Get().(*[]byte)
-	defer buffer.UPool.Put(bufp)
-	buf := *bufp
-
-	n, err := copyWithWriteRetry(dst, src, buf)
+	n, err := copyWithWriteRetry(dst, src, &buffer.UPool)
 	AddUDPDown(n)
 	return err
 }
 
-func copyWithWriteRetry(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
+func copyWithWriteRetry(dst io.Writer, src io.Reader, pool *sync.Pool) (int64, error) {
 	// Preserve fast-path optimizations (splice/sendfile) where possible.
 	type readerFrom interface {
 		ReadFrom(io.Reader) (int64, error)
@@ -65,6 +50,13 @@ func copyWithWriteRetry(dst io.Writer, src io.Reader, buf []byte) (int64, error)
 		return wt.WriteTo(&retryWriter{w: dst})
 	}
 
+	if pool == nil {
+		return io.Copy(&retryWriter{w: dst}, src)
+	}
+
+	bufp := pool.Get().(*[]byte)
+	defer pool.Put(bufp)
+	buf := *bufp
 	return io.CopyBuffer(&retryWriter{w: dst}, src, buf)
 }
 
