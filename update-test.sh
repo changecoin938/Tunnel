@@ -90,6 +90,21 @@ curl -fsSL "${url}" -o "${tmp}/paqet.tgz"
 
 tar -xzf "${tmp}/paqet.tgz" -C "${tmp}"
 
+# Update helper scripts too (important: older paqet-ui versions may re-apply unsafe sysctls).
+if [[ -f "${tmp}/scripts/paqet-ui" ]]; then
+  install -m 0755 "${tmp}/scripts/paqet-ui" /usr/local/bin/paqet-ui
+fi
+if [[ -f "${tmp}/scripts/paqet-rootcause" ]]; then
+  install -m 0755 "${tmp}/scripts/paqet-rootcause" /usr/local/bin/paqet-rootcause
+fi
+install -d /usr/local/lib/paqet
+if [[ -f "${tmp}/scripts/paqet-iptables.sh" ]]; then
+  install -m 0755 "${tmp}/scripts/paqet-iptables.sh" /usr/local/lib/paqet/paqet-iptables.sh
+fi
+if [[ -f "${tmp}/scripts/paqet-systemd-iptables.sh" ]]; then
+  install -m 0755 "${tmp}/scripts/paqet-systemd-iptables.sh" /usr/local/lib/paqet/paqet-systemd-iptables.sh
+fi
+
 # Prefer the systemd ExecStart path if possible so we don't accidentally install to a different binary.
 BIN="$(systemctl show paqet -p ExecStart --value 2>/dev/null | awk '{print $1}' | tr -d '\"' || true)"
 if [[ -z "${BIN}" || ! -x "${BIN}" ]]; then
@@ -114,4 +129,3 @@ fi
 
 "${BIN}" version || true
 echo "OK: updated ${BIN} from ${TAG} (repo=${REPO})"
-
