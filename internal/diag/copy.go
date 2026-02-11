@@ -78,8 +78,9 @@ func readFromWithRetry(dst interface {
 	ReadFrom(io.Reader) (int64, error)
 }, src io.Reader) (int64, error) {
 	const (
-		maxTotalSleep = 500 * time.Millisecond
+		burstBudget   = 500 * time.Millisecond // phase 1: fast exponential backoff
 		maxBackoff    = 20 * time.Millisecond
+		sustainedWait = 100 * time.Millisecond // phase 2: steady retry — never give up
 	)
 	backoff := 200 * time.Microsecond
 	var totalSlept time.Duration
@@ -89,17 +90,26 @@ func readFromWithRetry(dst interface {
 		n, err := dst.ReadFrom(src)
 		if n > 0 {
 			written += n
+			// Data flowed — reset to burst mode.
 			backoff = 200 * time.Microsecond
 			totalSlept = 0
 		}
 		if err == nil || errors.Is(err, io.EOF) {
 			return written, nil
 		}
-		if !isNoBufferOrNoMem(err) {
+		if !IsNoBufferOrNoMem(err) {
 			return written, err
 		}
-		if totalSlept >= maxTotalSleep {
-			return written, err
+
+		// ENOBUFS/ENOMEM: never give up on TCP streams.
+		// Phase 1 (burst): fast exponential backoff up to burstBudget.
+		// Phase 2 (sustained): steady 100ms waits — kernel WILL free buffers eventually.
+		AddEnobufsRetry()
+		if totalSlept >= burstBudget {
+			AddEnobufsSustained()
+			time.Sleep(sustainedWait)
+			totalSlept += sustainedWait
+			continue
 		}
 		time.Sleep(backoff)
 		totalSlept += backoff
@@ -112,7 +122,9 @@ func readFromWithRetry(dst interface {
 	}
 }
 
-func isNoBufferOrNoMem(err error) bool {
+// IsNoBufferOrNoMem reports whether err is ENOBUFS, ENOMEM, or the equivalent
+// libpcap string error. Exported so TCP handlers can use it as a safety net.
+func IsNoBufferOrNoMem(err error) bool {
 	return errors.Is(err, syscall.ENOBUFS) ||
 		errors.Is(err, syscall.ENOMEM) ||
 		strings.Contains(err.Error(), "No buffer space available") ||
@@ -121,8 +133,9 @@ func isNoBufferOrNoMem(err error) bool {
 
 func writeFullWithRetry(dst io.Writer, p []byte) (int, error) {
 	const (
-		maxTotalSleep = 500 * time.Millisecond
+		burstBudget   = 500 * time.Millisecond
 		maxBackoff    = 20 * time.Millisecond
+		sustainedWait = 100 * time.Millisecond
 	)
 	backoff := 200 * time.Microsecond
 	var totalSlept time.Duration
@@ -143,11 +156,14 @@ func writeFullWithRetry(dst io.Writer, p []byte) (int, error) {
 			continue
 		}
 
-		// ENOBUFS/ENOMEM can be transient under kernel network memory pressure.
-		// Treat it as retryable with bounded backoff to avoid tearing down streams.
-		if isNoBufferOrNoMem(err) {
-			if totalSlept >= maxTotalSleep {
-				return written, err
+		// ENOBUFS/ENOMEM: never give up — keep the stream alive.
+		if IsNoBufferOrNoMem(err) {
+			AddEnobufsRetry()
+			if totalSlept >= burstBudget {
+				AddEnobufsSustained()
+				time.Sleep(sustainedWait)
+				totalSlept += sustainedWait
+				continue
 			}
 			time.Sleep(backoff)
 			totalSlept += backoff

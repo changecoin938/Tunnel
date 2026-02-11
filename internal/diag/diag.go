@@ -66,6 +66,12 @@ var rawDownCoalescedParts atomic.Uint64
 var guardPass atomic.Uint64
 var guardDrops atomic.Uint64
 
+// enobufs* tracks stream-level ENOBUFS retries (in diag/copy.go).
+// enobufsRetries counts every individual retry attempt.
+// enobufsSustained counts how often we entered the slow sustained-wait phase (>500ms).
+var enobufsRetries atomic.Uint64
+var enobufsSustained atomic.Uint64
+
 var tcpUpBytes atomic.Uint64
 var tcpDownBytes atomic.Uint64
 var udpUpBytes atomic.Uint64
@@ -107,6 +113,9 @@ type Status struct {
 
 	GuardPass  uint64 `json:"guard_pass"`
 	GuardDrops uint64 `json:"guard_drops"`
+
+	EnobufsRetries   uint64 `json:"enobufs_retries"`
+	EnobufsSustained uint64 `json:"enobufs_sustained"`
 
 	TCPUpBytes   uint64 `json:"tcp_up_bytes"`
 	TCPDownBytes uint64 `json:"tcp_down_bytes"`
@@ -223,6 +232,19 @@ func AddGuardDrop() {
 	guardDrops.Add(1)
 }
 
+func AddEnobufsRetry() {
+	if !enabled {
+		return
+	}
+	enobufsRetries.Add(1)
+}
+func AddEnobufsSustained() {
+	if !enabled {
+		return
+	}
+	enobufsSustained.Add(1)
+}
+
 func AddTCPUp(n int64) {
 	if !enabled {
 		return
@@ -292,8 +314,12 @@ func Snapshot() Status {
 		RawDownCoalescedFrames:   rawDownCoalescedFrames.Load(),
 		RawDownCoalescedParts:    rawDownCoalescedParts.Load(),
 
-		GuardPass:    guardPass.Load(),
-		GuardDrops:   guardDrops.Load(),
+		GuardPass:  guardPass.Load(),
+		GuardDrops: guardDrops.Load(),
+
+		EnobufsRetries:   enobufsRetries.Load(),
+		EnobufsSustained: enobufsSustained.Load(),
+
 		TCPUpBytes:   tcpUpBytes.Load(),
 		TCPDownBytes: tcpDownBytes.Load(),
 		UDPUpBytes:   udpUpBytes.Load(),
@@ -369,6 +395,7 @@ func FormatText(s Status) string {
 			"    raw: coalesced frames=%d parts=%d\n"+
 			"    raw: oversize drops=%d bytes=%d\n"+
 			"    guard: pass=%d  drops=%d\n"+
+			"    enobufs: retries=%d sustained=%d\n"+
 			"    tcp: up=%d  down=%d\n"+
 			"    udp: up=%d  down=%d\n"+
 			"  %s\n"+
@@ -385,6 +412,7 @@ func FormatText(s Status) string {
 		s.RawDownCoalescedFrames, s.RawDownCoalescedParts,
 		s.RawDownOversizeDrops, s.RawDownOversizeDropBytes,
 		s.GuardPass, s.GuardDrops,
+		s.EnobufsRetries, s.EnobufsSustained,
 		s.TCPUpBytes, s.TCPDownBytes,
 		s.UDPUpBytes, s.UDPDownBytes,
 		pingLine,

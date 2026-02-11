@@ -62,14 +62,14 @@ func (k *KCP) setDefaults(role string) {
 
 	if k.Rcvwnd == 0 {
 		if role == "server" {
-			k.Rcvwnd = 1024
+			k.Rcvwnd = 2048
 		} else {
 			k.Rcvwnd = 512
 		}
 	}
 	if k.Sndwnd == 0 {
 		if role == "server" {
-			k.Sndwnd = 1024
+			k.Sndwnd = 2048
 		} else {
 			k.Sndwnd = 512
 		}
@@ -111,7 +111,7 @@ func (k *KCP) setDefaults(role string) {
 			k.MaxSessions = 1024
 		}
 		if k.MaxStreamsTotal == 0 {
-			k.MaxStreamsTotal = 32768
+			k.MaxStreamsTotal = 65536
 		}
 		if k.MaxStreamsPerSession == 0 {
 			k.MaxStreamsPerSession = 4096
@@ -122,10 +122,11 @@ func (k *KCP) setDefaults(role string) {
 		k.Smuxbuf = 4 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		// Keep conservative by default. Many real-world clients (speedtests, browsers)
-		// open lots of concurrent TCP connections, which becomes lots of SMUX streams.
-		// A large per-stream buffer can cause memory spikes and GC thrash.
-		k.Streambuf = 512 * 1024
+		// Keep conservative for high-concurrency (500-1000 users). Each user opens
+		// many streams (browser tabs, apps), so 25k+ streams are common. With 4GB
+		// RAM, 256KB per stream keeps memory manageable while providing adequate
+		// per-stream throughput for web browsing / messaging workloads.
+		k.Streambuf = 256 * 1024
 	}
 }
 

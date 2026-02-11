@@ -3,6 +3,7 @@ package forward
 import (
 	"context"
 	"net"
+
 	"paqet/internal/diag"
 	"paqet/internal/flog"
 )
@@ -68,6 +69,11 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 	select {
 	case err := <-errCh:
 		if err != nil {
+			// ENOBUFS/ENOMEM is transient — never tear down the connection for it.
+			if diag.IsNoBufferOrNoMem(err) {
+				flog.Debugf("TCP stream %d for %s -> %s hit ENOBUFS (benign): %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
+				return nil
+			}
 			flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
 			return err
 		}

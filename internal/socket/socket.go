@@ -339,8 +339,8 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	// Note: returning a non-nil error here will cause kcp-go to tear down the
 	// session. For transient ENOBUFS/ENOMEM we must keep the session alive.
 	const (
-		maxTotalSleep = 50 * time.Millisecond
-		maxBackoff    = 20 * time.Millisecond
+		maxTotalSleep = 200 * time.Millisecond
+		maxBackoff    = 50 * time.Millisecond
 	)
 	backoff := 200 * time.Microsecond
 	var totalSlept time.Duration

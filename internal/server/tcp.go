@@ -41,6 +41,13 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	select {
 	case err := <-errChan:
 		if err != nil {
+			// ENOBUFS/ENOMEM is transient kernel memory pressure — never tear down
+			// the TCP stream for it. With sustained retry in the copy layer this
+			// should not happen, but treat it as benign just in case.
+			if diag.IsNoBufferOrNoMem(err) {
+				flog.Debugf("TCP stream %d to %s hit ENOBUFS (benign): %v", strm.SID(), addr, err)
+				return nil
+			}
 			flog.Errorf("TCP stream %d to %s failed: %v", strm.SID(), addr, err)
 			return err
 		}
