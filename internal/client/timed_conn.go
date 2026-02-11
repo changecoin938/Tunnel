@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"paqet/internal/conf"
+	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
@@ -20,8 +21,9 @@ type timedConn struct {
 	netCfg    conf.Network
 	connIndex int
 
-	mu   sync.RWMutex
-	conn tnet.Conn
+	mu          sync.RWMutex
+	conn        tnet.Conn
+	reconnectCh chan struct{}
 }
 
 func newTimedConn(ctx context.Context, cfg *conf.Conf, connIndex int) (*timedConn, error) {
@@ -31,7 +33,7 @@ func newTimedConn(ctx context.Context, cfg *conf.Conf, connIndex int) (*timedCon
 	}
 	conn, err := tc.createConn()
 	if err != nil {
-		return nil, err
+		return tc, err
 	}
 	tc.conn = conn
 	return tc, nil
@@ -194,29 +196,89 @@ func (tc *timedConn) markBroken(conn tnet.Conn) {
 }
 
 func (tc *timedConn) reconnect() error {
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	if tc.ctx.Err() != nil {
-		return tc.ctx.Err()
-	}
-	if tc.conn != nil {
-		return nil
-	}
-
-	backoff := 200 * time.Millisecond
 	for {
-		if tc.ctx.Err() != nil {
-			return tc.ctx.Err()
+		if err := tc.ctx.Err(); err != nil {
+			return err
+		}
+
+		tc.mu.Lock()
+		if tc.conn != nil {
+			tc.mu.Unlock()
+			return nil
+		}
+		if tc.reconnectCh != nil {
+			ch := tc.reconnectCh
+			tc.mu.Unlock()
+			select {
+			case <-ch:
+				// Re-check connection after another goroutine finishes reconnecting.
+				continue
+			case <-tc.ctx.Done():
+				return tc.ctx.Err()
+			}
+		}
+		ch := make(chan struct{})
+		tc.reconnectCh = ch
+		tc.mu.Unlock()
+
+		conn, err := tc.reconnectLoop()
+
+		tc.mu.Lock()
+		// If we reconnected successfully but someone else already set tc.conn (should be rare),
+		// prefer the existing one and close ours to avoid leaks.
+		if err == nil {
+			if tc.conn == nil {
+				tc.conn = conn
+			} else if conn != nil {
+				_ = conn.Close()
+			}
+		}
+		tc.reconnectCh = nil
+		close(ch)
+		tc.mu.Unlock()
+
+		return err
+	}
+}
+
+func (tc *timedConn) reconnectLoop() (tnet.Conn, error) {
+	backoff := 200 * time.Millisecond
+	nextLog := time.Now()
+	var lastErr error
+	for {
+		if err := tc.ctx.Err(); err != nil {
+			return nil, err
 		}
 		conn, err := tc.createConn()
 		if err == nil {
-			tc.conn = conn
-			return nil
+			return conn, nil
+		}
+		lastErr = err
+		if time.Now().After(nextLog) {
+			flog.Warnf("tunnel connection %d reconnect failed (retrying): %v", tc.connIndex+1, lastErr)
+			nextLog = time.Now().Add(30 * time.Second)
 		}
 		time.Sleep(backoff)
 		if backoff < 5*time.Second {
 			backoff *= 2
+		}
+	}
+}
+
+func (tc *timedConn) maintain() {
+	// Establish as soon as possible. Never block caller.
+	_ = tc.reconnect()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-tc.ctx.Done():
+			return
+		case <-ticker.C:
+			if tc.getConn() == nil {
+				_ = tc.reconnect()
+			}
 		}
 	}
 }

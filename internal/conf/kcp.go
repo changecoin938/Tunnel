@@ -114,7 +114,9 @@ func (k *KCP) setDefaults(role string) {
 			k.MaxStreamsTotal = 65536
 		}
 		if k.MaxStreamsPerSession == 0 {
-			k.MaxStreamsPerSession = 4096
+			// With multiple KCP sessions (transport.conn), we need a high per-session
+			// ceiling to support thousands of concurrent streams/users.
+			k.MaxStreamsPerSession = 32768
 		}
 	}
 

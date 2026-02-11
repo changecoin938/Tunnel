@@ -170,11 +170,11 @@ pick_kcp_window() {
   mem="$(detect_mem_total_mb)"
 
   local wnd
-  if (( mem > 0 && mem < 2048 )); then
+  if (( mem > 0 && mem < 4096 )); then
     wnd=2048
-  elif (( mem > 0 && mem < 4096 )); then
-    wnd=4096
   elif (( mem > 0 && mem < 8192 )); then
+    wnd=4096
+  elif (( mem > 0 && mem < 16384 )); then
     wnd=8192
   else
     wnd=16384
@@ -195,7 +195,7 @@ pick_smuxbuf() {
   mem="$(detect_mem_total_mb)"
   if (( mem > 0 && mem < 2048 )); then
     echo $(( 4 * 1024 * 1024 ))
-  elif (( mem > 0 && mem < 4096 )); then
+  elif (( mem > 0 && mem < 8192 )); then
     echo $(( 8 * 1024 * 1024 ))
   else
     echo $(( 16 * 1024 * 1024 ))
@@ -206,9 +206,9 @@ pick_streambuf() {
   # Per-stream buffer. Keep conservative to avoid memory spikes with many streams.
   local mem
   mem="$(detect_mem_total_mb)"
-  if (( mem > 0 && mem < 2048 )); then
+  if (( mem > 0 && mem < 8192 )); then
     echo $(( 256 * 1024 ))
-  elif (( mem > 0 && mem < 4096 )); then
+  elif (( mem > 0 && mem < 16384 )); then
     echo $(( 512 * 1024 ))
   else
     echo $(( 1024 * 1024 ))
@@ -472,8 +472,10 @@ write_sysctl_defaults() {
 # paqet baseline tuning (adjust per host/RAM/NIC)
 net.core.rmem_max = 33554432
 net.core.wmem_max = 33554432
-net.core.rmem_default = 8388608
-net.core.wmem_default = 8388608
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.ipv4.tcp_rmem = 4096 131072 33554432
+net.ipv4.tcp_wmem = 4096 131072 33554432
 net.core.netdev_max_backlog = 250000
 EOF
   sysctl --system >/dev/null 2>&1 || true
@@ -1317,7 +1319,7 @@ gen_server_config() {
   if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then conn=1; fi
   if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
   if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((512*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((256*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "server"
 
@@ -1334,7 +1336,7 @@ network:
     addr: "${ip}:${port}"
     router_mac: "${router_mac}"
   pcap:
-    sockbuf: 33554432
+    sockbuf: 16777216
     snaplen: ${PCAP_SNAPLEN}
     promisc: ${PCAP_PROMISC}
     immediate: ${PCAP_IMMEDIATE}
@@ -1354,8 +1356,8 @@ transport:
     guard_magic: "PQT1"
     guard_window: 30
     guard_skew: 1
-    max_sessions: 2048
-    max_streams_total: 262144
+    max_sessions: 1024
+    max_streams_total: 65536
     max_streams_per_session: 32768
     header_timeout: 10
     smuxbuf: ${smuxbuf}
@@ -1376,7 +1378,7 @@ gen_client_config_no_socks() {
   fi
   if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
   if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((512*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((256*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "client"
 
@@ -1390,7 +1392,7 @@ network:
     addr: "${ip}:${local_port}"
     router_mac: "${router_mac}"
   pcap:
-    sockbuf: 33554432
+    sockbuf: 4194304
     snaplen: ${PCAP_SNAPLEN}
     promisc: ${PCAP_PROMISC}
     immediate: ${PCAP_IMMEDIATE}

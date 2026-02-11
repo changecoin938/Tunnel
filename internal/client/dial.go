@@ -13,21 +13,17 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 		return nil, errNoTunnelConnections
 	}
 
-	for {
+	// Try each tunnel connection once (fail-fast). Background reconnect loops keep tunnels up.
+	n := len(c.iter.Items)
+	for i := 0; i < n; i++ {
 		tc := c.iter.Next()
 		if tc == nil {
-			return nil, errNoTunnelConnections
+			continue
 		}
 
 		conn := tc.getConn()
 		if conn == nil {
-			if err := tc.reconnect(); err != nil {
-				return nil, err
-			}
-			conn = tc.getConn()
-			if conn == nil {
-				continue
-			}
+			continue
 		}
 
 		strm, err := conn.OpenStrm()
@@ -35,10 +31,9 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 			return strm, nil
 		}
 
-		flog.Debugf("failed to open stream, reconnecting: %v", err)
+		flog.Debugf("failed to open stream, reconnecting in background: %v", err)
 		tc.markBroken(conn)
-		if err := tc.reconnect(); err != nil {
-			return nil, err
-		}
 	}
+
+	return nil, errNoTunnelConnections
 }
