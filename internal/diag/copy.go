@@ -122,6 +122,9 @@ func readFromWithRetry(dst interface {
 // IsNoBufferOrNoMem reports whether err is ENOBUFS, ENOMEM, or the equivalent
 // libpcap string error. Exported so TCP handlers can use it as a safety net.
 func IsNoBufferOrNoMem(err error) bool {
+	if err == nil {
+		return false
+	}
 	return errors.Is(err, syscall.ENOBUFS) ||
 		errors.Is(err, syscall.ENOMEM) ||
 		strings.Contains(err.Error(), "No buffer space available") ||
