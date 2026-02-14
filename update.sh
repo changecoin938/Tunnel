@@ -9,15 +9,19 @@ set -euo pipefail
 # Env:
 #   PAQET_REPO=OWNER/REPO   (default: changecoin938/Tunnel)
 #   PAQET_TAG=tag_name      (default: stable-latest; can set to test-latest)
+#   PAQET_SOURCE_REF=ref    (optional: build from source ref, e.g. main)
 #   PAQET_SKIP_SYSCTL=1     (skip sysctl safety tuning)
 #   PAQET_SKIP_SWAP=1       (skip swap setup)
 #   PAQET_SWAP_SIZE=2G      (default: 2G)
+#   PAQET_GO_TARBALL_VERSION=1.25.4 (Go toolchain used for source builds)
 
 REPO="${PAQET_REPO:-changecoin938/Tunnel}"
 TAG="${PAQET_TAG:-stable-latest}"
+SOURCE_REF="${PAQET_SOURCE_REF:-}"
 SKIP_SYSCTL="${PAQET_SKIP_SYSCTL:-0}"
 SKIP_SWAP="${PAQET_SKIP_SWAP:-0}"
 SWAP_SIZE="${PAQET_SWAP_SIZE:-2G}"
+GO_TARBALL_VERSION="${PAQET_GO_TARBALL_VERSION:-1.25.4}"
 
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -36,6 +40,104 @@ case "${arch}" in
     exit 1
     ;;
 esac
+
+ensure_go_for_source_build() {
+  if command -v go >/dev/null 2>&1; then
+    if go version | grep -Eq 'go1\.(2[5-9]|[3-9][0-9])(\.| )'; then
+      return 0
+    fi
+  fi
+
+  local urls=(
+    "https://mirrors.aliyun.com/golang/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
+    "https://go.dev/dl/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz?download=1"
+    "https://dl.google.com/go/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
+  )
+
+  local ok=0
+  for u in "${urls[@]}"; do
+    echo "Downloading Go toolchain: ${u}"
+    if curl -fL "${u}" -o "${tmp}/go.tgz"; then
+      ok=1
+      break
+    fi
+  done
+  if [[ "${ok}" != "1" ]]; then
+    echo "failed to download Go toolchain ${GO_TARBALL_VERSION}" >&2
+    exit 1
+  fi
+
+  rm -rf /usr/local/go
+  tar -C /usr/local -xzf "${tmp}/go.tgz"
+  export PATH="/usr/local/go/bin:${PATH}"
+}
+
+detect_bin_path() {
+  local b
+  b="$(systemctl show paqet -p ExecStart --value 2>/dev/null | awk '{print $1}' | tr -d '\"' || true)"
+  if [[ -n "${b}" && -x "${b}" ]]; then
+    echo "${b}"
+    return 0
+  fi
+  b="$(command -v paqet 2>/dev/null || true)"
+  if [[ -n "${b}" ]]; then
+    echo "${b}"
+    return 0
+  fi
+  echo "/usr/local/bin/paqet"
+}
+
+install_helpers_from_dir() {
+  local src_dir="${1}"
+  if [[ -f "${src_dir}/scripts/paqet-ui" ]]; then
+    install -m 0755 "${src_dir}/scripts/paqet-ui" /usr/local/bin/paqet-ui
+  fi
+  if [[ -f "${src_dir}/scripts/paqet-rootcause" ]]; then
+    install -m 0755 "${src_dir}/scripts/paqet-rootcause" /usr/local/bin/paqet-rootcause
+  fi
+  install -d /usr/local/lib/paqet
+  if [[ -f "${src_dir}/scripts/paqet-iptables.sh" ]]; then
+    install -m 0755 "${src_dir}/scripts/paqet-iptables.sh" /usr/local/lib/paqet/paqet-iptables.sh
+  fi
+  if [[ -f "${src_dir}/scripts/paqet-systemd-iptables.sh" ]]; then
+    install -m 0755 "${src_dir}/scripts/paqet-systemd-iptables.sh" /usr/local/lib/paqet/paqet-systemd-iptables.sh
+  fi
+}
+
+install_from_source_ref() {
+  local ref="${1}"
+  apt-get install -y --no-install-recommends git build-essential libpcap-dev >/dev/null 2>&1 || true
+  ensure_go_for_source_build
+
+  local repo_url="https://github.com/${REPO}.git"
+  local src_dir="${tmp}/src"
+  if ! git clone --depth 1 --branch "${ref}" "${repo_url}" "${src_dir}" 2>/dev/null; then
+    git clone --depth 1 "${repo_url}" "${src_dir}"
+    (
+      cd "${src_dir}"
+      git fetch --depth 1 origin "${ref}" || true
+      git checkout -q "${ref}" || true
+    )
+  fi
+
+  (
+    cd "${src_dir}"
+    export PATH="/usr/local/go/bin:${PATH}"
+    GOTOOLCHAIN=auto go build -trimpath -o "${tmp}/paqet" ./cmd
+  )
+
+  local bin
+  bin="$(detect_bin_path)"
+  cp -a "${bin}" "${bin}.bak.$(date +%s)" 2>/dev/null || true
+  install -m 0755 "${tmp}/paqet" "${bin}"
+  install_helpers_from_dir "${src_dir}"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart paqet || true
+  fi
+  "${bin}" version || true
+  echo "OK: built from source ref=${ref} (repo=${REPO}) -> ${bin}"
+}
 
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
@@ -84,9 +186,18 @@ tmp="$(mktemp -d)"
 cleanup() { rm -rf "${tmp}"; }
 trap cleanup EXIT
 
+if [[ -n "${SOURCE_REF}" ]]; then
+  install_from_source_ref "${SOURCE_REF}"
+  exit 0
+fi
+
 url="https://github.com/${REPO}/releases/download/${TAG}/paqet-linux-${goarch}.tar.gz"
 echo "Downloading: ${url}"
-curl -fsSL "${url}" -o "${tmp}/paqet.tgz"
+if ! curl -fsSL "${url}" -o "${tmp}/paqet.tgz"; then
+  echo "WARN: release asset download failed for tag=${TAG}; fallback to source ref=main"
+  install_from_source_ref "main"
+  exit 0
+fi
 
 tar -xzf "${tmp}/paqet.tgz" -C "${tmp}"
 
@@ -106,13 +217,7 @@ if [[ -f "${tmp}/scripts/paqet-systemd-iptables.sh" ]]; then
 fi
 
 # Prefer the systemd ExecStart path if possible so we don't accidentally install to a different binary.
-BIN="$(systemctl show paqet -p ExecStart --value 2>/dev/null | awk '{print $1}' | tr -d '\"' || true)"
-if [[ -z "${BIN}" || ! -x "${BIN}" ]]; then
-  BIN="$(command -v paqet 2>/dev/null || true)"
-fi
-if [[ -z "${BIN}" ]]; then
-  BIN="/usr/local/bin/paqet"
-fi
+BIN="$(detect_bin_path)"
 
 src="${tmp}/paqet_linux_${goarch}"
 if [[ ! -f "${src}" ]]; then
