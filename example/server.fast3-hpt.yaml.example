@@ -1,0 +1,48 @@
+# High-throughput Fast3 profile (server role)
+# Tune this file for gRPC-heavy tunnel workloads.
+role: "server"
+
+log:
+  level: "warn"
+
+debug:
+  pprof: "127.0.0.1:6060"
+  diag: true
+
+listen:
+  addr: ":9999"
+
+network:
+  interface: "eth0"
+  dscp: 0
+  ipv4:
+    addr: "10.0.0.100:9999"
+    router_mac: "aa:bb:cc:dd:ee:ff"
+  pcap:
+    sockbuf: 33554432
+    snaplen: 65535
+    promisc: false
+    immediate: true
+    timeout_ms: 0
+
+transport:
+  protocol: "kcp"
+  conn: 6
+  kcp:
+    mode: "fast3"
+    mtu: 1350
+    rcvwnd: 32768
+    sndwnd: 32768
+    block: "aes"
+    key: "your-secret-key-here"
+    guard: true
+    guard_magic: "PQT1"
+
+    # Server-side limits (recommended for this profile)
+    max_sessions: 128
+    max_streams_total: 16384
+    max_streams_per_session: 4096
+
+    # Multiplexing buffers
+    smuxbuf: 4194304
+    streambuf: 262144

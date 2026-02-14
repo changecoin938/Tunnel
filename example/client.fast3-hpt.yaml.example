@@ -1,0 +1,49 @@
+# High-throughput Fast3 profile (client role)
+# Tune this file for gRPC-heavy tunnel workloads.
+role: "client"
+
+log:
+  level: "warn"
+
+debug:
+  pprof: "127.0.0.1:6060"
+  diag: true
+
+network:
+  interface: "ens3"
+  dscp: 0
+  ipv4:
+    addr: "10.0.0.101:20000"
+    router_mac: "aa:bb:cc:dd:ee:ff"
+  pcap:
+    sockbuf: 16777216
+    snaplen: 65535
+    promisc: false
+    immediate: true
+    timeout_ms: 0
+
+server:
+  addr: "10.0.0.100:9999"
+
+transport:
+  protocol: "kcp"
+  conn: 6
+  kcp:
+    mode: "fast3"
+    mtu: 1350
+    rcvwnd: 32768
+    sndwnd: 32768
+    block: "aes"
+    key: "your-secret-key-here"
+    guard: true
+    guard_magic: "PQT1"
+
+    # Multiplexing buffers
+    smuxbuf: 4194304
+    streambuf: 262144
+
+# Example TCP forward (Xray gRPC style)
+forward:
+  - listen: "0.0.0.0:443"
+    target: "127.0.0.1:2443"
+    protocol: "tcp"

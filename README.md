@@ -73,6 +73,8 @@ paqet uses a unified configuration approach with role-based settings. Copy and m
 
 - `example/client.yaml.example` - Client configuration example
 - `example/server.yaml.example` - Server configuration example
+- `example/client.fast3-hpt.yaml.example` - High-throughput Fast3 client profile (gRPC-friendly)
+- `example/server.fast3-hpt.yaml.example` - High-throughput Fast3 server profile (gRPC-friendly)
 
 You must correctly set the interfaces, IP addresses, MAC addresses, and ports.
 
@@ -274,6 +276,8 @@ paqet uses a unified YAML configuration that works for both clients and servers.
 
 - [`example/client.yaml.example`](example/client.yaml.example) - Client configuration reference
 - [`example/server.yaml.example`](example/server.yaml.example) - Server configuration reference
+- [`example/client.fast3-hpt.yaml.example`](example/client.fast3-hpt.yaml.example) - High-throughput Fast3 client profile
+- [`example/server.fast3-hpt.yaml.example`](example/server.fast3-hpt.yaml.example) - High-throughput Fast3 server profile
 
 For production tuning, see [`docs/production.md`](docs/production.md).
 
