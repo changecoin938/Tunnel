@@ -11,8 +11,9 @@ import (
 func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 	key := hash.AddrPair(lAddr, tAddr)
 	c.udpPool.mu.RLock()
-	if strm, exists := c.udpPool.strms[key]; exists {
+	if strm, exists := c.udpPool.strms[key]; exists && strm != nil {
 		c.udpPool.mu.RUnlock()
+		strm.touch()
 		flog.Debugf("reusing UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
 		return strm, false, key, nil
 	}
@@ -42,12 +43,24 @@ func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 		return nil, false, 0, err
 	}
 
+	tracked := &udpTrackedStrm{Strm: strm}
+	tracked.touch()
 	c.udpPool.mu.Lock()
-	c.udpPool.strms[key] = strm
+	// Best-effort: if the pool grows too large due to abusive UDP fan-out, evict idle entries.
+	if c.udpPool.maxEntries == 0 {
+		c.udpPool.maxEntries = udpPoolMaxEntriesDefault
+	}
+	if c.udpPool.idleTimeout == 0 {
+		c.udpPool.idleTimeout = udpPoolIdleTimeoutDefault
+	}
+	if c.udpPool.maxEntries > 0 && len(c.udpPool.strms) >= c.udpPool.maxEntries {
+		c.udpPool.evictLocked(time.Now())
+	}
+	c.udpPool.strms[key] = tracked
 	c.udpPool.mu.Unlock()
 
 	flog.Debugf("established UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
-	return strm, true, key, nil
+	return tracked, true, key, nil
 }
 
 func (c *Client) CloseUDP(key uint64) error {

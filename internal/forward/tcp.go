@@ -52,33 +52,35 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 	}
 	defer func() {
 		flog.Debugf("TCP stream closed for %s -> %s", conn.RemoteAddr(), f.targetAddr)
-		defer strm.Close()
+		_ = strm.Close()
 	}()
 	flog.Debugf("accepted TCP connection %s -> %s", conn.RemoteAddr(), f.targetAddr)
 
-	errCh := make(chan error, 2)
-	go func() {
-		err := diag.CopyTCPDown(conn, strm)
-		errCh <- err
-	}()
-	go func() {
-		err := diag.CopyTCPUp(strm, conn)
-		errCh <- err
-	}()
+	errDown, errUp := diag.BidiCopy(
+		ctx,
+		conn,
+		strm,
+		func() error { return diag.CopyTCPDown(conn, strm) },
+		func() error { return diag.CopyTCPUp(strm, conn) },
+	)
 
-	select {
-	case err := <-errCh:
-		if err != nil {
-			// ENOBUFS/ENOMEM is transient — never tear down the connection for it.
-			if diag.IsNoBufferOrNoMem(err) {
-				flog.Debugf("TCP stream %d for %s -> %s hit ENOBUFS (benign): %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
-				return nil
-			}
-			flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
-			return err
-		}
-	case <-ctx.Done():
+	if ctx.Err() != nil {
+		return nil
 	}
 
+	// ENOBUFS/ENOMEM is transient — never tear down the connection for it.
+	if diag.IsNoBufferOrNoMem(errDown) || diag.IsNoBufferOrNoMem(errUp) {
+		flog.Debugf("TCP stream %d for %s -> %s hit ENOBUFS (benign): down=%v up=%v", strm.SID(), conn.RemoteAddr(), f.targetAddr, errDown, errUp)
+		return nil
+	}
+
+	if !diag.IsBenignStreamErr(errDown) {
+		flog.Errorf("TCP stream %d failed for %s -> %s (down): %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, errDown)
+		return errDown
+	}
+	if !diag.IsBenignStreamErr(errUp) {
+		flog.Errorf("TCP stream %d failed for %s -> %s (up): %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, errUp)
+		return errUp
+	}
 	return nil
 }

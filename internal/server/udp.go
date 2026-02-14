@@ -26,25 +26,25 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 	}()
 	flog.Debugf("UDP connection established to %s for stream %d", addr, strm.SID())
 
-	errChan := make(chan error, 2)
-	go func() {
-		err := diag.CopyUDPUp(conn, strm)
-		errChan <- err
-	}()
-	go func() {
-		err := diag.CopyUDPDown(strm, conn)
-		errChan <- err
-	}()
+	errUp, errDown := diag.BidiCopy(
+		ctx,
+		conn,
+		strm,
+		func() error { return diag.CopyUDPUp(conn, strm) },
+		func() error { return diag.CopyUDPDown(strm, conn) },
+	)
 
-	select {
-	case err := <-errChan:
-		if err != nil {
-			flog.Errorf("UDP stream %d to %s failed: %v", strm.SID(), addr, err)
-			return err
-		}
-	case <-ctx.Done():
+	if ctx.Err() != nil {
 		return nil
 	}
 
+	if !diag.IsBenignStreamErr(errUp) {
+		flog.Errorf("UDP stream %d to %s failed (up): %v", strm.SID(), addr, errUp)
+		return errUp
+	}
+	if !diag.IsBenignStreamErr(errDown) {
+		flog.Errorf("UDP stream %d to %s failed (down): %v", strm.SID(), addr, errDown)
+		return errDown
+	}
 	return nil
 }

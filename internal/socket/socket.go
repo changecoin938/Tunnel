@@ -333,69 +333,39 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 
 	// Under heavy bursts, pcap injection can transiently fail with ENOBUFS.
 	// For KCP this should be treated like packet loss, not a fatal connection error.
-	// We do a bounded retry to smooth bursts, then drop (report success) so upper
-	// layers can recover via retransmit/backpressure.
+	// Drop (report success) so upper layers can recover via retransmit/backpressure.
 	//
 	// Note: returning a non-nil error here will cause kcp-go to tear down the
 	// session. For transient ENOBUFS/ENOMEM we must keep the session alive.
-	const (
-		maxTotalSleep = 200 * time.Millisecond
-		maxBackoff    = 50 * time.Millisecond
-	)
-	backoff := 200 * time.Microsecond
-	var totalSlept time.Duration
-	for {
-		if prefix != nil {
-			err = c.sendHandle.WriteParts(prefix, data, daddr)
-		} else {
-			err = c.sendHandle.Write(data, daddr)
-		}
-		if err == nil {
-			diag.AddRawUp(wireLen)
-			return len(data), nil
-		}
-		// libpcap returns plain string errors via pcap_geterr (no errno), so also
-		// match by message to detect ENOBUFS/ENOMEM.
-		if !errors.Is(err, syscall.ENOBUFS) &&
-			!errors.Is(err, syscall.ENOMEM) &&
-			!strings.Contains(err.Error(), "No buffer space available") &&
-			!strings.Contains(err.Error(), "Cannot allocate memory") {
-			return 0, err
-		}
-
-		// ENOBUFS/ENOMEM: bounded retry, then drop (as loss).
-		if totalSlept >= maxTotalSleep {
-			diag.AddRawUpDrop(wireLen)
-			return len(data), nil
-		}
-
-		select {
-		case <-c.ctx.Done():
-			return 0, c.ctx.Err()
-		case <-deadline:
-			return 0, os.ErrDeadlineExceeded
-		default:
-		}
-
-		time.Sleep(backoff)
-		totalSlept += backoff
-		if backoff < maxBackoff {
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
+	if prefix != nil {
+		err = c.sendHandle.WriteParts(prefix, data, daddr)
+	} else {
+		err = c.sendHandle.Write(data, daddr)
 	}
+	if err == nil {
+		diag.AddRawUp(wireLen)
+		return len(data), nil
+	}
+	// libpcap returns plain string errors via pcap_geterr (no errno), so also
+	// match by message to detect ENOBUFS/ENOMEM.
+	if errors.Is(err, syscall.ENOBUFS) ||
+		errors.Is(err, syscall.ENOMEM) ||
+		strings.Contains(err.Error(), "No buffer space available") ||
+		strings.Contains(err.Error(), "Cannot allocate memory") {
+		diag.AddRawUpDrop(wireLen)
+		return len(data), nil
+	}
+	return 0, err
 }
 
 func (c *PacketConn) Close() error {
 	c.cancel()
 
 	if c.sendHandle != nil {
-		go c.sendHandle.Close()
+		c.sendHandle.Close()
 	}
 	if c.recvHandle != nil {
-		go c.recvHandle.Close()
+		c.recvHandle.Close()
 	}
 
 	return nil
@@ -445,5 +415,15 @@ func (c *PacketConn) SetDSCP(dscp int) error {
 }
 
 func (c *PacketConn) SetClientTCPF(addr net.Addr, f []conf.TCPF) {
+	if c == nil || c.sendHandle == nil {
+		return
+	}
 	c.sendHandle.setClientTCPF(addr, f)
+}
+
+func (c *PacketConn) ClearClientTCPF(addr net.Addr) {
+	if c == nil || c.sendHandle == nil {
+		return
+	}
+	c.sendHandle.clearClientTCPF(addr)
 }

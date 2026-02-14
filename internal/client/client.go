@@ -6,7 +6,6 @@ import (
 	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/iterator"
-	"paqet/internal/tnet"
 )
 
 type Client struct {
@@ -17,9 +16,13 @@ type Client struct {
 
 func New(cfg *conf.Conf) (*Client, error) {
 	c := &Client{
-		cfg:     cfg,
-		iter:    &iterator.Iterator[*timedConn]{},
-		udpPool: &udpPool{strms: make(map[uint64]tnet.Strm)},
+		cfg:  cfg,
+		iter: &iterator.Iterator[*timedConn]{},
+		udpPool: &udpPool{
+			strms:       make(map[uint64]*udpTrackedStrm),
+			maxEntries:  udpPoolMaxEntriesDefault,
+			idleTimeout: udpPoolIdleTimeoutDefault,
+		},
 	}
 	return c, nil
 }
@@ -47,6 +50,9 @@ func (c *Client) Start(ctx context.Context) error {
 	// The ticker is only for diagnostics (ping RTT). Avoid extra streams/CPU in production.
 	if diag.Enabled() {
 		go c.ticker(ctx)
+	}
+	if c.udpPool != nil {
+		go c.udpPool.sweep(ctx)
 	}
 
 	go func() {

@@ -3,6 +3,8 @@ package flog
 import (
 	"fmt"
 	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,8 +20,10 @@ const (
 )
 
 var (
-	minLevel = Info
-	logCh    = make(chan string, 1024)
+	minLevel  = Info
+	logCh     = make(chan string, 1024)
+	dropped   atomic.Uint64
+	startOnce sync.Once
 )
 
 func init() {
@@ -28,13 +32,30 @@ func init() {
 
 func SetLevel(l int) {
 	minLevel = Level(l)
-	if l != -1 {
+	if l == int(None) {
+		return
+	}
+
+	startOnce.Do(func() {
 		go func() {
-			for msg := range logCh {
-				fmt.Fprint(os.Stdout, msg)
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case msg, ok := <-logCh:
+					if !ok {
+						return
+					}
+					fmt.Fprint(os.Stdout, msg)
+				case <-ticker.C:
+					if n := dropped.Swap(0); n > 0 {
+						now := time.Now().Format("2006-01-02 15:04:05.000")
+						fmt.Fprintf(os.Stdout, "%s [WARN] flog: dropped %d log lines (logCh full)\n", now, n)
+					}
+				}
 			}
 		}()
-	}
+	})
 }
 
 func logf(level Level, format string, args ...any) {
@@ -42,11 +63,10 @@ func logf(level Level, format string, args ...any) {
 		return
 	}
 
-	for _, arg := range args {
+	for i, arg := range args {
 		if err, ok := arg.(error); ok {
-			err = WErr(err)
-			if err == nil {
-				return
+			if WErr(err) == nil {
+				args[i] = "<filtered>"
 			}
 		}
 	}
@@ -57,6 +77,7 @@ func logf(level Level, format string, args ...any) {
 	select {
 	case logCh <- line:
 	default:
+		dropped.Add(1)
 	}
 }
 

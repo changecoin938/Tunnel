@@ -2,54 +2,24 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
-	"net"
-	"os"
 	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
 	tkcp "paqet/internal/tnet/kcp"
-	"strings"
-	"syscall"
 	"time"
 )
-
-func streamErrIsBenign(err error) bool {
-	if err == nil {
-		return true
-	}
-	if errors.Is(err, context.Canceled) {
-		return true
-	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		return true
-	}
-	if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, net.ErrClosed) {
-		return true
-	}
-	var ne net.Error
-	if errors.As(err, &ne) && ne.Timeout() {
-		return true
-	}
-	if errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
-		return true
-	}
-	// Some send paths (libpcap via pcap_geterr) return plain string errors without errno.
-	if strings.Contains(err.Error(), "No buffer space available") ||
-		strings.Contains(err.Error(), "Cannot allocate memory") {
-		return true
-	}
-	return false
-}
 
 func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 	var pConn *socket.PacketConn
 	if kc, ok := conn.(*tkcp.Conn); ok {
 		pConn = kc.PacketConn
+	}
+	if pConn != nil {
+		remote := conn.RemoteAddr()
+		defer pConn.ClearClientTCPF(remote)
 	}
 
 	var perSem chan struct{}
@@ -65,7 +35,7 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 		}
 		strm, err := conn.AcceptStrm()
 		if err != nil {
-			if ctx.Err() != nil || streamErrIsBenign(err) {
+			if ctx.Err() != nil || diag.IsBenignStreamErr(err) {
 				flog.Debugf("stream accept closed for %v: %v", conn.RemoteAddr(), err)
 				return
 			}
@@ -106,7 +76,7 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 			}()
 			defer strm.Close()
 			if err := s.handleStrm(ctx, strm, pConn); err != nil {
-				if ctx.Err() != nil || streamErrIsBenign(err) {
+				if ctx.Err() != nil || diag.IsBenignStreamErr(err) {
 					flog.Debugf("stream %d from %v closed: %v", strm.SID(), strm.RemoteAddr(), err)
 				} else {
 					flog.Errorf("stream %d from %v closed with error: %v", strm.SID(), strm.RemoteAddr(), err)

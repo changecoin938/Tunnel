@@ -14,8 +14,9 @@ import (
 type RecvHandle struct {
 	handle *pcap.Handle
 
-	mu        sync.RWMutex
-	addrCache map[addrKey]*net.UDPAddr
+	mu           sync.RWMutex
+	addrCache    map[addrKey]*net.UDPAddr
+	addrCacheOld map[addrKey]*net.UDPAddr
 }
 
 func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
@@ -96,9 +97,32 @@ func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 		h.mu.RUnlock()
 		return a
 	}
+	if h.addrCacheOld != nil {
+		if a := h.addrCacheOld[k]; a != nil {
+			h.mu.RUnlock()
+			// Promote to hot cache.
+			h.mu.Lock()
+			if b := h.addrCache[k]; b != nil {
+				h.mu.Unlock()
+				return b
+			}
+			if old := h.addrCacheOld; old != nil {
+				if b := old[k]; b != nil {
+					h.addrCache[k] = b
+					delete(old, k)
+					h.mu.Unlock()
+					return b
+				}
+			}
+			h.mu.Unlock()
+			// Fall through to allocation path.
+			goto alloc
+		}
+	}
 	h.mu.RUnlock()
 
 	// Create a stable copy (pcap buffers are reused).
+alloc:
 	var ipCopy net.IP
 	if k.v4 {
 		ipCopy = make(net.IP, 4)
@@ -112,6 +136,7 @@ func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 	h.mu.Lock()
 	// If we got flooded with unique spoofed sources, keep memory bounded.
 	if len(h.addrCache) >= maxAddrCache {
+		h.addrCacheOld = h.addrCache
 		h.addrCache = make(map[addrKey]*net.UDPAddr, 1024)
 	}
 	if a := h.addrCache[k]; a != nil {

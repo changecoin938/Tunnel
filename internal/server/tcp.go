@@ -28,30 +28,34 @@ func (s *Server) handleTCP(ctx context.Context, strm tnet.Strm, addr string) err
 	}()
 	flog.Debugf("TCP connection established to %s for stream %d", addr, strm.SID())
 
-	errChan := make(chan error, 2)
-	go func() {
-		err := diag.CopyTCPUp(conn, strm)
-		errChan <- err
-	}()
-	go func() {
-		err := diag.CopyTCPDown(strm, conn)
-		errChan <- err
-	}()
+	errUp, errDown := diag.BidiCopy(
+		ctx,
+		conn,
+		strm,
+		func() error { return diag.CopyTCPUp(conn, strm) },
+		func() error { return diag.CopyTCPDown(strm, conn) },
+	)
 
-	select {
-	case err := <-errChan:
-		if err != nil {
-			// ENOBUFS/ENOMEM is transient kernel memory pressure — never tear down
-			// the TCP stream for it. With sustained retry in the copy layer this
-			// should not happen, but treat it as benign just in case.
-			if diag.IsNoBufferOrNoMem(err) {
-				flog.Debugf("TCP stream %d to %s hit ENOBUFS (benign): %v", strm.SID(), addr, err)
-				return nil
-			}
-			flog.Errorf("TCP stream %d to %s failed: %v", strm.SID(), addr, err)
-			return err
-		}
-	case <-ctx.Done():
+	if ctx.Err() != nil {
+		return nil
 	}
+
+	// ENOBUFS/ENOMEM is transient kernel memory pressure — never tear down the
+	// TCP stream for it. With sustained retry in the copy layer this should not
+	// happen, but treat it as benign just in case.
+	if diag.IsNoBufferOrNoMem(errUp) || diag.IsNoBufferOrNoMem(errDown) {
+		flog.Debugf("TCP stream %d to %s hit ENOBUFS (benign): up=%v down=%v", strm.SID(), addr, errUp, errDown)
+		return nil
+	}
+
+	if !diag.IsBenignStreamErr(errUp) {
+		flog.Errorf("TCP stream %d to %s failed (up): %v", strm.SID(), addr, errUp)
+		return errUp
+	}
+	if !diag.IsBenignStreamErr(errDown) {
+		flog.Errorf("TCP stream %d to %s failed (down): %v", strm.SID(), addr, errDown)
+		return errDown
+	}
+
 	return nil
 }
