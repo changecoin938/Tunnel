@@ -52,7 +52,10 @@ type KCP struct {
 	Block kcp.BlockCrypt `yaml:"-"`
 }
 
-func (k *KCP) setDefaults(role string) {
+func (k *KCP) setDefaults(role string, connCount int) {
+	memMB := totalMemMB()
+	wnd := pickKCPWindow(memMB, connCount)
+
 	if k.Mode == "" {
 		k.Mode = "fast2"
 	}
@@ -61,14 +64,18 @@ func (k *KCP) setDefaults(role string) {
 	}
 
 	if k.Rcvwnd == 0 {
-		if role == "server" {
+		if wnd > 0 {
+			k.Rcvwnd = wnd
+		} else if role == "server" {
 			k.Rcvwnd = 2048
 		} else {
 			k.Rcvwnd = 512
 		}
 	}
 	if k.Sndwnd == 0 {
-		if role == "server" {
+		if wnd > 0 {
+			k.Sndwnd = wnd
+		} else if role == "server" {
 			k.Sndwnd = 2048
 		} else {
 			k.Sndwnd = 512
@@ -121,14 +128,82 @@ func (k *KCP) setDefaults(role string) {
 	}
 
 	if k.Smuxbuf == 0 {
-		k.Smuxbuf = 4 * 1024 * 1024
+		if sb := pickSmuxBuf(memMB); sb > 0 {
+			k.Smuxbuf = sb
+		} else {
+			k.Smuxbuf = 4 * 1024 * 1024
+		}
 	}
 	if k.Streambuf == 0 {
-		// Keep conservative for high-concurrency (500-1000 users). Each user opens
-		// many streams (browser tabs, apps), so 25k+ streams are common. With 4GB
-		// RAM, 128KB per stream keeps memory manageable while providing adequate
-		// per-stream throughput for web browsing / messaging workloads.
-		k.Streambuf = 128 * 1024
+		if sb := pickStreamBuf(memMB); sb > 0 {
+			k.Streambuf = sb
+		} else {
+			// Keep conservative for high-concurrency (500-1000 users). Each user opens
+			// many streams (browser tabs, apps), so 25k+ streams are common. With 4GB
+			// RAM, 128KB per stream keeps memory manageable while providing adequate
+			// per-stream throughput for web browsing / messaging workloads.
+			k.Streambuf = 128 * 1024
+		}
+	}
+}
+
+func pickKCPWindow(memMB int, connCount int) int {
+	// Mirrors the heuristic used in scripts/paqet-ui:
+	// - Scale window with RAM (larger window => higher BDP throughput)
+	// - Cap per-session window when running many sessions (transport.conn)
+	if connCount < 1 {
+		connCount = 1
+	}
+	if memMB <= 0 {
+		return 0
+	}
+
+	wnd := 0
+	switch {
+	case memMB < 4096:
+		wnd = 2048
+	case memMB < 8192:
+		wnd = 4096
+	case memMB < 16384:
+		wnd = 8192
+	default:
+		wnd = 16384
+	}
+
+	if connCount >= 16 && wnd > 8192 {
+		wnd = 8192
+	}
+	if connCount >= 32 && wnd > 4096 {
+		wnd = 4096
+	}
+	return wnd
+}
+
+func pickSmuxBuf(memMB int) int {
+	if memMB <= 0 {
+		return 0
+	}
+	switch {
+	case memMB < 2048:
+		return 4 * 1024 * 1024
+	case memMB < 8192:
+		return 8 * 1024 * 1024
+	default:
+		return 16 * 1024 * 1024
+	}
+}
+
+func pickStreamBuf(memMB int) int {
+	if memMB <= 0 {
+		return 0
+	}
+	switch {
+	case memMB < 8192:
+		return 128 * 1024
+	case memMB < 16384:
+		return 256 * 1024
+	default:
+		return 512 * 1024
 	}
 }
 
