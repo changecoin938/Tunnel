@@ -73,6 +73,7 @@ func readFromWithRetry(dst interface {
 		burstBudget   = 500 * time.Millisecond // phase 1: fast exponential backoff
 		maxBackoff    = 20 * time.Millisecond
 		sustainedWait = 100 * time.Millisecond // phase 2: steady retry — never give up
+		maxTotalWait  = 30 * time.Second       // upper bound per ENOBUFS/ENOMEM episode
 	)
 	backoff := 200 * time.Microsecond
 	var totalSlept time.Duration
@@ -93,10 +94,14 @@ func readFromWithRetry(dst interface {
 			return written, err
 		}
 
-		// ENOBUFS/ENOMEM: never give up on TCP streams.
+		// ENOBUFS/ENOMEM: transient kernel buffer pressure. Retry, but don't keep
+		// goroutines stuck forever under sustained memory pressure.
 		// Phase 1 (burst): fast exponential backoff up to burstBudget.
-		// Phase 2 (sustained): steady 100ms waits — kernel WILL free buffers eventually.
+		// Phase 2 (sustained): steady 100ms waits.
 		AddEnobufsRetry()
+		if totalSlept >= maxTotalWait {
+			return written, err
+		}
 		if totalSlept >= burstBudget {
 			AddEnobufsSustained()
 			time.Sleep(sustainedWait)
@@ -128,6 +133,7 @@ func writeFullWithRetry(dst io.Writer, p []byte) (int, error) {
 		burstBudget   = 500 * time.Millisecond
 		maxBackoff    = 20 * time.Millisecond
 		sustainedWait = 100 * time.Millisecond
+		maxTotalWait  = 30 * time.Second
 	)
 	backoff := 200 * time.Microsecond
 	var totalSlept time.Duration
@@ -151,6 +157,9 @@ func writeFullWithRetry(dst io.Writer, p []byte) (int, error) {
 		// ENOBUFS/ENOMEM: never give up — keep the stream alive.
 		if IsNoBufferOrNoMem(err) {
 			AddEnobufsRetry()
+			if totalSlept >= maxTotalWait {
+				return written, err
+			}
 			if totalSlept >= burstBudget {
 				AddEnobufsSustained()
 				time.Sleep(sustainedWait)

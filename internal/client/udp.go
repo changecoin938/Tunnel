@@ -45,6 +45,7 @@ func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 
 	tracked := &udpTrackedStrm{Strm: strm}
 	tracked.touch()
+	var toClose []*udpTrackedStrm
 	c.udpPool.mu.Lock()
 	// Best-effort: if the pool grows too large due to abusive UDP fan-out, evict idle entries.
 	if c.udpPool.maxEntries == 0 {
@@ -54,10 +55,14 @@ func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 		c.udpPool.idleTimeout = udpPoolIdleTimeoutDefault
 	}
 	if c.udpPool.maxEntries > 0 && len(c.udpPool.strms) >= c.udpPool.maxEntries {
-		c.udpPool.evictLocked(time.Now())
+		toClose = c.udpPool.evictLocked(time.Now())
 	}
 	c.udpPool.strms[key] = tracked
 	c.udpPool.mu.Unlock()
+
+	for _, s := range toClose {
+		_ = s.Close()
+	}
 
 	flog.Debugf("established UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
 	return tracked, true, key, nil

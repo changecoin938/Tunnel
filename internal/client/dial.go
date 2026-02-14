@@ -23,6 +23,7 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 
 		conn := tc.getConn()
 		if conn == nil {
+			tc.kickReconnect()
 			continue
 		}
 

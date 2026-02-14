@@ -24,10 +24,11 @@ type timedConn struct {
 	mu          sync.RWMutex
 	conn        tnet.Conn
 	reconnectCh chan struct{}
+	kickCh      chan struct{}
 }
 
 func newTimedConn(ctx context.Context, cfg *conf.Conf, connIndex int) (*timedConn, error) {
-	tc := &timedConn{cfg: cfg, ctx: ctx, netCfg: cfg.Network, connIndex: connIndex}
+	tc := &timedConn{cfg: cfg, ctx: ctx, netCfg: cfg.Network, connIndex: connIndex, kickCh: make(chan struct{}, 1)}
 	if err := tc.applyConnIndex(connIndex); err != nil {
 		return nil, err
 	}
@@ -187,12 +188,25 @@ func (tc *timedConn) markBroken(conn tnet.Conn) {
 	}
 
 	tc.mu.Lock()
-	defer tc.mu.Unlock()
 	if tc.conn != conn {
+		tc.mu.Unlock()
 		return
 	}
 	_ = tc.conn.Close()
 	tc.conn = nil
+	tc.mu.Unlock()
+
+	tc.kickReconnect()
+}
+
+func (tc *timedConn) kickReconnect() {
+	if tc == nil || tc.kickCh == nil {
+		return
+	}
+	select {
+	case tc.kickCh <- struct{}{}:
+	default:
+	}
 }
 
 func (tc *timedConn) reconnect() error {
@@ -276,9 +290,11 @@ func (tc *timedConn) maintain() {
 		case <-tc.ctx.Done():
 			return
 		case <-ticker.C:
-			if tc.getConn() == nil {
-				_ = tc.reconnect()
-			}
+		case <-tc.kickCh:
+		}
+
+		if tc.getConn() == nil {
+			_ = tc.reconnect()
 		}
 	}
 }

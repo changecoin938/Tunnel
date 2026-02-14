@@ -2,42 +2,56 @@ package diag
 
 import (
 	"context"
-	"io"
+	"net"
+	"time"
 )
 
+type bidiCopyResult struct {
+	idx int
+	err error
+}
+
 // BidiCopy runs two copy loops (usually up/down) and ensures both goroutines exit
-// before returning by closing both sides once either direction finishes or ctx is done.
+// before returning by cancelling both sides (via SetDeadline(time.Now())) once either
+// direction finishes or ctx is done.
 //
 // It returns the two copy errors (one per direction). Callers should typically
 // treat benign close/shutdown errors as nil via IsBenignStreamErr.
-func BidiCopy(ctx context.Context, a io.Closer, b io.Closer, f1 func() error, f2 func() error) (error, error) {
-	errCh := make(chan error, 2)
-	go func() { errCh <- f1() }()
-	go func() { errCh <- f2() }()
+func BidiCopy(ctx context.Context, a net.Conn, b net.Conn, f1 func() error, f2 func() error) (error, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	// Wait for first completion OR shutdown request, then close both sides to
-	// unblock the other copy goroutine.
-	gotFirst := false
-	var firstErr error
+	errCh := make(chan bidiCopyResult, 2)
+	go func() { errCh <- bidiCopyResult{idx: 0, err: f1()} }()
+	go func() { errCh <- bidiCopyResult{idx: 1, err: f2()} }()
+
+	var errs [2]error
+	got := 0
+
+	// Wait for first completion OR shutdown request, then cancel both sides to
+	// unblock the other copy goroutine. Cancellation uses deadlines so the caller
+	// can retain ownership of Close().
 	select {
 	case <-ctx.Done():
-	case firstErr = <-errCh:
-		gotFirst = true
+	case res := <-errCh:
+		errs[res.idx] = res.err
+		got = 1
 	}
 
+	cancelAt := time.Now()
 	if a != nil {
-		_ = a.Close()
+		_ = a.SetDeadline(cancelAt)
 	}
 	if b != nil {
-		_ = b.Close()
+		_ = b.SetDeadline(cancelAt)
 	}
 
-	// Drain both copy results. Channel buffer size ensures neither sender blocks.
-	if gotFirst {
-		secondErr := <-errCh
-		return firstErr, secondErr
+	for got < 2 {
+		res := <-errCh
+		errs[res.idx] = res.err
+		got++
 	}
-	err1 := <-errCh
-	err2 := <-errCh
-	return err1, err2
+
+	return errs[0], errs[1]
 }

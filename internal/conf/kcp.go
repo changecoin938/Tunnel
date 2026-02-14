@@ -115,20 +115,20 @@ func (k *KCP) setDefaults(role string, connCount int) {
 	// Defensive defaults for servers. Use -1 in config to disable limits.
 	if role == "server" {
 		if k.MaxSessions == 0 {
-			k.MaxSessions = 1024
-		}
-		if k.MaxStreamsTotal == 0 {
-			k.MaxStreamsTotal = 65536
-		}
-		if k.MaxStreamsPerSession == 0 {
-			// With multiple KCP sessions (transport.conn), we need a high per-session
-			// ceiling to support thousands of concurrent streams/users.
-			k.MaxStreamsPerSession = 32768
+			if ms := pickMaxSessions(memMB); ms > 0 {
+				k.MaxSessions = ms
+			} else {
+				k.MaxSessions = 1024
+			}
 		}
 	}
 
 	if k.Smuxbuf == 0 {
-		if sb := pickSmuxBuf(memMB); sb > 0 {
+		sessionCount := connCount
+		if role == "server" && k.MaxSessions > 0 {
+			sessionCount = k.MaxSessions
+		}
+		if sb := pickSmuxBuf(memMB, sessionCount); sb > 0 {
 			k.Smuxbuf = sb
 		} else {
 			k.Smuxbuf = 4 * 1024 * 1024
@@ -143,6 +143,29 @@ func (k *KCP) setDefaults(role string, connCount int) {
 			// RAM, 128KB per stream keeps memory manageable while providing adequate
 			// per-stream throughput for web browsing / messaging workloads.
 			k.Streambuf = 128 * 1024
+		}
+	}
+
+	// Defensive defaults for servers. Use -1 in config to disable limits.
+	// These limits should scale with RAM to avoid a single server OOM'ing under
+	// stream fan-out and to reduce DoS impact.
+	if role == "server" {
+		if k.MaxStreamsTotal == 0 {
+			if ms := pickMaxStreamsTotal(memMB, k.Streambuf); ms > 0 {
+				k.MaxStreamsTotal = ms
+			} else {
+				k.MaxStreamsTotal = 65536
+			}
+		}
+		if k.MaxStreamsPerSession == 0 {
+			if ms := pickMaxStreamsPerSession(k.MaxStreamsTotal); ms > 0 {
+				k.MaxStreamsPerSession = ms
+			} else {
+				k.MaxStreamsPerSession = 32768
+			}
+		}
+		if k.MaxStreamsPerSession > k.MaxStreamsTotal && k.MaxStreamsTotal > 0 {
+			k.MaxStreamsPerSession = k.MaxStreamsTotal
 		}
 	}
 }
@@ -179,32 +202,91 @@ func pickKCPWindow(memMB int, connCount int) int {
 	return wnd
 }
 
-func pickSmuxBuf(memMB int) int {
+func pickMaxSessions(memMB int) int {
 	if memMB <= 0 {
 		return 0
 	}
 	switch {
 	case memMB < 2048:
-		return 4 * 1024 * 1024
-	case memMB < 8192:
-		return 8 * 1024 * 1024
+		return 256
+	case memMB < 4096:
+		return 512
 	default:
-		return 16 * 1024 * 1024
+		return 1024
 	}
+}
+
+func pickSmuxBuf(memMB int, sessionCount int) int {
+	if memMB <= 0 || sessionCount < 1 {
+		return 0
+	}
+
+	// Budget: up to 25% of RAM total for smux receive buffers.
+	// MaxReceiveBuffer is a cap, not a pre-allocation, but in worst-case DoS it
+	// can get close, so keep it bounded.
+	budgetBytes := int64(memMB) * 1024 * 1024 / 4
+	per := budgetBytes / int64(sessionCount)
+
+	const (
+		min = 256 * 1024
+		max = 4 * 1024 * 1024
+	)
+	if per < min {
+		per = min
+	}
+	if per > max {
+		per = max
+	}
+	return int(per)
 }
 
 func pickStreamBuf(memMB int) int {
 	if memMB <= 0 {
 		return 0
 	}
-	switch {
-	case memMB < 8192:
+	// Keep conservative for high-concurrency VPN workloads; larger buffers can
+	// amplify memory usage when many streams stall.
+	if memMB < 16384 {
 		return 128 * 1024
-	case memMB < 16384:
-		return 256 * 1024
-	default:
-		return 512 * 1024
 	}
+	return 256 * 1024
+}
+
+func pickMaxStreamsTotal(memMB int, streamBuf int) int {
+	if memMB <= 0 || streamBuf < 1 {
+		return 0
+	}
+
+	// Budget: up to 25% of RAM for worst-case per-stream buffering. This is a
+	// hard upper bound against stream fan-out OOM.
+	budgetBytes := int64(memMB) * 1024 * 1024 / 4
+	max := int(budgetBytes / int64(streamBuf))
+
+	if max < 1024 {
+		max = 1024
+	}
+	if max > 65536 {
+		max = 65536
+	}
+	return max
+}
+
+func pickMaxStreamsPerSession(maxStreamsTotal int) int {
+	if maxStreamsTotal <= 0 {
+		return 0
+	}
+
+	per := maxStreamsTotal / 16
+	if per < 256 {
+		per = 256
+	}
+	if per > 4096 {
+		per = 4096
+	}
+	if per > maxStreamsTotal {
+		per = maxStreamsTotal
+	}
+	return per
 }
 
 func (k *KCP) validate() []error {

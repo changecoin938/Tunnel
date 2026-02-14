@@ -13,6 +13,7 @@ const (
 	udpPoolMaxEntriesDefault    = 4096
 	udpPoolIdleTimeoutDefault   = 60 * time.Second
 	udpPoolSweepIntervalDefault = 30 * time.Second
+	udpPoolTouchIntervalDefault = 5 * time.Second
 )
 
 type udpTrackedStrm struct {
@@ -21,7 +22,13 @@ type udpTrackedStrm struct {
 }
 
 func (s *udpTrackedStrm) touch() {
-	s.lastUsed.Store(time.Now().UnixNano())
+	now := time.Now().UnixNano()
+	last := s.lastUsed.Load()
+	// Throttle time.Now() -> atomic.Store churn in high-QPS UDP (e.g., DNS).
+	if last != 0 && now-last < int64(udpPoolTouchIntervalDefault) {
+		return
+	}
+	s.lastUsed.Store(now)
 }
 
 func (s *udpTrackedStrm) Read(p []byte) (int, error) {
@@ -48,15 +55,22 @@ type udpPool struct {
 }
 
 func (p *udpPool) delete(key uint64) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if strm, exists := p.strms[key]; exists && strm != nil {
-		flog.Debugf("closing UDP session stream %d", strm.SID())
-		strm.Close()
-	} else {
-		flog.Debugf("UDP session key %d not found for close", key)
+	if p == nil {
+		return nil
 	}
-	delete(p.strms, key)
+
+	var strm *udpTrackedStrm
+	p.mu.Lock()
+	if p.strms != nil {
+		strm = p.strms[key]
+		delete(p.strms, key)
+	}
+	p.mu.Unlock()
+
+	if strm != nil {
+		flog.Debugf("closing UDP session stream %d", strm.SID())
+		_ = strm.Close()
+	}
 
 	return nil
 }
@@ -79,30 +93,54 @@ func (p *udpPool) sweep(ctx context.Context) {
 }
 
 func (p *udpPool) closeAll() {
+	if p == nil {
+		return
+	}
+
+	var toClose []*udpTrackedStrm
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	for k, strm := range p.strms {
 		if strm != nil {
-			_ = strm.Close()
+			toClose = append(toClose, strm)
 		}
 		delete(p.strms, k)
+	}
+	p.mu.Unlock()
+
+	for _, strm := range toClose {
+		_ = strm.Close()
 	}
 }
 
 func (p *udpPool) evict(now time.Time) {
+	if p == nil {
+		return
+	}
+
+	var toClose []*udpTrackedStrm
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.evictLocked(now)
+	toClose = p.evictLocked(now)
+	p.mu.Unlock()
+
+	for _, strm := range toClose {
+		_ = strm.Close()
+	}
 }
 
-func (p *udpPool) evictLocked(now time.Time) {
+func (p *udpPool) evictLocked(now time.Time) []*udpTrackedStrm {
+	if p == nil {
+		return nil
+	}
+
+	var toClose []*udpTrackedStrm
+
 	if p.idleTimeout > 0 {
 		cutoff := now.Add(-p.idleTimeout).UnixNano()
 		for k, strm := range p.strms {
 			if strm == nil || strm.lastUsed.Load() < cutoff {
 				if strm != nil {
 					flog.Debugf("evicting idle UDP stream %d", strm.SID())
-					_ = strm.Close()
+					toClose = append(toClose, strm)
 				}
 				delete(p.strms, k)
 			}
@@ -110,32 +148,20 @@ func (p *udpPool) evictLocked(now time.Time) {
 	}
 
 	if p.maxEntries > 0 && len(p.strms) > p.maxEntries {
-		// Evict oldest entries until under the limit.
-		for len(p.strms) > p.maxEntries {
-			var oldestKey uint64
-			var oldestAt int64
-			first := true
-			for k, strm := range p.strms {
-				if strm == nil {
-					oldestKey = k
-					first = false
-					break
-				}
-				at := strm.lastUsed.Load()
-				if first || at < oldestAt {
-					oldestKey = k
-					oldestAt = at
-					first = false
-				}
-			}
-			if first {
+		// Still over capacity: evict arbitrary entries (Go map iteration is randomized).
+		over := len(p.strms) - p.maxEntries
+		for k, strm := range p.strms {
+			if over <= 0 {
 				break
 			}
-			if strm := p.strms[oldestKey]; strm != nil {
+			if strm != nil {
 				flog.Debugf("evicting UDP stream %d (pool full)", strm.SID())
-				_ = strm.Close()
+				toClose = append(toClose, strm)
 			}
-			delete(p.strms, oldestKey)
+			delete(p.strms, k)
+			over--
 		}
 	}
+
+	return toClose
 }

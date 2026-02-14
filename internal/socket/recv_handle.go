@@ -97,32 +97,15 @@ func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 		h.mu.RUnlock()
 		return a
 	}
-	if h.addrCacheOld != nil {
-		if a := h.addrCacheOld[k]; a != nil {
+	if old := h.addrCacheOld; old != nil {
+		if a := old[k]; a != nil {
 			h.mu.RUnlock()
-			// Promote to hot cache.
-			h.mu.Lock()
-			if b := h.addrCache[k]; b != nil {
-				h.mu.Unlock()
-				return b
-			}
-			if old := h.addrCacheOld; old != nil {
-				if b := old[k]; b != nil {
-					h.addrCache[k] = b
-					delete(old, k)
-					h.mu.Unlock()
-					return b
-				}
-			}
-			h.mu.Unlock()
-			// Fall through to allocation path.
-			goto alloc
+			return a
 		}
 	}
 	h.mu.RUnlock()
 
 	// Create a stable copy (pcap buffers are reused).
-alloc:
 	var ipCopy net.IP
 	if k.v4 {
 		ipCopy = make(net.IP, 4)
@@ -142,6 +125,12 @@ alloc:
 	if a := h.addrCache[k]; a != nil {
 		h.mu.Unlock()
 		return a
+	}
+	if old := h.addrCacheOld; old != nil {
+		if a := old[k]; a != nil {
+			h.mu.Unlock()
+			return a
+		}
 	}
 	h.addrCache[k] = addr
 	h.mu.Unlock()
