@@ -6,9 +6,11 @@ role: "client"
 log:
   level: "info"  # none, debug, info, warn, error, fatal
 
-# Optional debug endpoints (bind to localhost unless protected)
+# Test/diagnostic endpoints (bind to localhost unless protected).
+# Keep enabled while benchmarking; disable in strict production if not needed.
 debug:
-  # pprof: "127.0.0.1:6060"
+  pprof: "127.0.0.1:6060"
+  diag: true
 
 # SOCKS5 proxy configuration (client mode)
 socks5:
