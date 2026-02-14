@@ -105,37 +105,48 @@ func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 	}
 	h.mu.RUnlock()
 
-	// Create a stable copy (pcap buffers are reused).
-	var ipCopy net.IP
-	if k.v4 {
-		ipCopy = make(net.IP, 4)
-		copy(ipCopy, srcIP[:4])
-	} else {
-		ipCopy = make(net.IP, 16)
-		copy(ipCopy, srcIP[:16])
-	}
-	addr := &net.UDPAddr{IP: ipCopy, Port: int(srcPort)}
-
 	h.mu.Lock()
-	// If we got flooded with unique spoofed sources, keep memory bounded.
-	if len(h.addrCache) >= maxAddrCache {
-		h.addrCacheOld = h.addrCache
-		h.addrCache = make(map[addrKey]*net.UDPAddr, 1024)
-	}
 	if a := h.addrCache[k]; a != nil {
 		h.mu.Unlock()
 		return a
 	}
 	if old := h.addrCacheOld; old != nil {
 		if a := old[k]; a != nil {
+			// Promote to hot generation when needed.
+			if len(h.addrCache) >= maxAddrCache {
+				h.addrCacheOld = h.addrCache
+				h.addrCache = make(map[addrKey]*net.UDPAddr, 1024)
+			}
+			h.addrCache[k] = a
+			delete(old, k)
 			h.mu.Unlock()
 			return a
 		}
 	}
+
+	// If we got flooded with unique spoofed sources, keep memory bounded.
+	if len(h.addrCache) >= maxAddrCache {
+		h.addrCacheOld = h.addrCache
+		h.addrCache = make(map[addrKey]*net.UDPAddr, 1024)
+	}
+	addr := makeAddrCopy(srcIP, srcPort, k.v4)
 	h.addrCache[k] = addr
 	h.mu.Unlock()
 
 	return addr
+}
+
+func makeAddrCopy(srcIP []byte, srcPort uint16, v4 bool) *net.UDPAddr {
+	// pcap buffers are reused, so keep a stable address copy.
+	var ipCopy net.IP
+	if v4 {
+		ipCopy = make(net.IP, 4)
+		copy(ipCopy, srcIP[:4])
+	} else {
+		ipCopy = make(net.IP, 16)
+		copy(ipCopy, srcIP[:16])
+	}
+	return &net.UDPAddr{IP: ipCopy, Port: int(srcPort)}
 }
 
 // parseEtherIPTCP parses an Ethernet frame carrying IPv4/IPv6+TCP and returns:
