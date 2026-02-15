@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"paqet/internal/conf"
-	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/socket"
@@ -38,7 +37,6 @@ func newTimedConn(ctx context.Context, cfg *conf.Conf, connIndex int) (*timedCon
 		return tc, err
 	}
 	tc.conn = conn
-	diag.IncSessions()
 	return tc, nil
 }
 
@@ -198,7 +196,6 @@ func (tc *timedConn) markBroken(conn tnet.Conn) {
 	tc.conn = nil
 	tc.mu.Unlock()
 
-	diag.DecSessions()
 	tc.kickReconnect()
 }
 
@@ -246,7 +243,6 @@ func (tc *timedConn) reconnect() error {
 		if err == nil {
 			if tc.conn == nil {
 				tc.conn = conn
-				diag.IncSessions()
 			} else if conn != nil {
 				_ = conn.Close()
 			}
@@ -326,6 +322,5 @@ func (tc *timedConn) close() {
 
 	if conn != nil {
 		_ = conn.Close()
-		diag.DecSessions()
 	}
 }
