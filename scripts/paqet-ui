@@ -64,7 +64,7 @@ yaml_quote() {
 }
 
 # Tunnel defaults (high-throughput). These are embedded in generated configs.
-KCP_MODE="fast2"
+KCP_MODE="fast3"
 KCP_MTU="1350"
 PCAP_SNAPLEN="65535"
 PCAP_PROMISC="false"
@@ -81,23 +81,8 @@ DEBUG_PPROF_DEFAULT="127.0.0.1:6060"
 CLIENT_RAW_PORT_DEFAULT="20000"
 
 pick_client_conn() {
-  # Choose a reasonable default number of parallel KCP sessions for higher throughput.
-  # More connections = more CPU and more parallelism.
-  local n
-  n="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)"
-  if ! [[ "${n}" =~ ^[0-9]+$ ]]; then
-    n=1
-  fi
-  if (( n <= 2 )); then
-    echo 1
-  elif (( n <= 4 )); then
-    echo 2
-  elif (( n <= 8 )); then
-    echo 4
-  else
-    # For 16c+ boxes, 8 parallel sessions is a good baseline.
-    echo 8
-  fi
+  # Default profile: keep 10 parallel KCP sessions for gRPC-heavy setups.
+  echo 10
 }
 
 pick_client_raw_port() {
@@ -160,59 +145,16 @@ detect_mem_total_mb() {
 }
 
 pick_kcp_window() {
-  # Pick a window size that is large enough for throughput but avoids OOM on smaller boxes.
-  # Window applies per KCP session; total memory scales with `transport.conn`.
-  local conn="${1:-1}"
-  if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then
-    conn=1
-  fi
-  local mem
-  mem="$(detect_mem_total_mb)"
-
-  local wnd
-  if (( mem > 0 && mem < 4096 )); then
-    wnd=2048
-  elif (( mem > 0 && mem < 8192 )); then
-    wnd=4096
-  elif (( mem > 0 && mem < 16384 )); then
-    wnd=8192
-  else
-    wnd=16384
-  fi
-
-  # If we run many sessions, cap per-session window to keep total memory bounded.
-  if (( conn >= 16 && wnd > 8192 )); then
-    wnd=8192
-  fi
-  if (( conn >= 32 && wnd > 4096 )); then
-    wnd=4096
-  fi
-  echo "${wnd}"
+  # Default profile window.
+  echo 8192
 }
 
 pick_smuxbuf() {
-  local mem
-  mem="$(detect_mem_total_mb)"
-  if (( mem > 0 && mem < 2048 )); then
-    echo $(( 4 * 1024 * 1024 ))
-  elif (( mem > 0 && mem < 8192 )); then
-    echo $(( 8 * 1024 * 1024 ))
-  else
-    echo $(( 16 * 1024 * 1024 ))
-  fi
+  echo $(( 16 * 1024 * 1024 ))
 }
 
 pick_streambuf() {
-  # Per-stream buffer. Keep conservative to avoid memory spikes with many streams.
-  local mem
-  mem="$(detect_mem_total_mb)"
-  if (( mem > 0 && mem < 8192 )); then
-    echo $(( 128 * 1024 ))
-  elif (( mem > 0 && mem < 16384 )); then
-    echo $(( 256 * 1024 ))
-  else
-    echo $(( 512 * 1024 ))
-  fi
+  echo $(( 4 * 1024 * 1024 ))
 }
 
 adjust_conn_to_free_server_port_range() {
@@ -1203,7 +1145,7 @@ diagnostics_loop() {
       "9" "Set snaplen=65535 + restart" \
       "10" "Live monitor (1s, Ctrl+C)" \
       "11" "Set DSCP (0 throughput / 46 low-latency)" \
-      "12" "Retune KCP (fast2 + window/buffer پیشنهادی)" \
+      "12" "Retune KCP (fast3 + window/buffer پیشنهادی)" \
       "0" "Back")" || return 0
 
     case "${choice}" in
@@ -1232,7 +1174,7 @@ diagnostics_loop() {
 }
 
 set_forward_single_rule() {
-  # Replace the entire top-level "forward:" block with a single TCP rule.
+  # Replace the entire top-level "forward:" block with X-UI defaults.
   # This keeps the setup predictable and avoids duplicate YAML keys.
   local listen_addr="$1" target_addr="$2"
   local tmp
@@ -1253,6 +1195,9 @@ set_forward_single_rule() {
 forward:
   - listen: "${listen_addr}"
     target: "${target_addr}"
+    protocol: "tcp"
+  - listen: "127.0.0.1:5555"
+    target: "127.0.0.1:5555"
     protocol: "tcp"
 EOF
 
@@ -1318,13 +1263,17 @@ gen_server_config() {
   key_q="$(yaml_quote "${key}")"
   if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then conn=1; fi
   if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
-  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((128*1024)); fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((16*1024*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((4*1024*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "server"
 
 log:
   level: "warn"
+
+debug:
+  pprof: "${DEBUG_PPROF_DEFAULT}"
+  diag: true
 
 listen:
   addr: ":${port}"
@@ -1336,7 +1285,7 @@ network:
     addr: "${ip}:${port}"
     router_mac: "${router_mac}"
   pcap:
-    sockbuf: 16777216
+    sockbuf: 33554432
     snaplen: ${PCAP_SNAPLEN}
     promisc: ${PCAP_PROMISC}
     immediate: ${PCAP_IMMEDIATE}
@@ -1356,9 +1305,9 @@ transport:
     guard_magic: "PQT1"
     guard_window: 30
     guard_skew: 1
-    max_sessions: 1024
-    max_streams_total: 65536
-    max_streams_per_session: 32768
+    max_sessions: 128
+    max_streams_total: 16384
+    max_streams_per_session: 4096
     header_timeout: 10
     smuxbuf: ${smuxbuf}
     streambuf: ${streambuf}
@@ -1377,13 +1326,17 @@ gen_client_config_no_socks() {
     conn=256
   fi
   if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
-  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((128*1024)); fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((16*1024*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((4*1024*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "client"
 
 log:
   level: "warn"
+
+debug:
+  pprof: "${DEBUG_PPROF_DEFAULT}"
+  diag: true
 
 network:
   interface: "${iface}"
@@ -1392,7 +1345,7 @@ network:
     addr: "${ip}:${local_port}"
     router_mac: "${router_mac}"
   pcap:
-    sockbuf: 4194304
+    sockbuf: 16777216
     snaplen: ${PCAP_SNAPLEN}
     promisc: ${PCAP_PROMISC}
     immediate: ${PCAP_IMMEDIATE}
