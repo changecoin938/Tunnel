@@ -27,12 +27,12 @@ network:
 
 transport:
   protocol: "kcp"
-  conn: 6
+  conn: 10
   kcp:
     mode: "fast3"
     mtu: 1350
-    rcvwnd: 32768
-    sndwnd: 32768
+    rcvwnd: 8192
+    sndwnd: 8192
     block: "aes"
     key: "your-secret-key-here"
     guard: true
@@ -44,5 +44,5 @@ transport:
     max_streams_per_session: 4096
 
     # Multiplexing buffers
-    smuxbuf: 4194304
-    streambuf: 262144
+    smuxbuf: 16777216
+    streambuf: 4194304
