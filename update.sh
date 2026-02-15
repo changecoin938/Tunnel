@@ -15,6 +15,7 @@ set -euo pipefail
 #   PAQET_SWAP_SIZE=2G      (default: 2G)
 #   PAQET_GO_TARBALL_VERSION=1.25.4 (Go toolchain used for source builds)
 #   PAQET_GO_ALLOW_OFFICIAL=1 (allow fallback to go.dev/dl.google if Aliyun fails)
+#   PAQET_PREFER_SOURCE=1   (default: 1; build from source ref to avoid release/tag 404s)
 
 REPO="${PAQET_REPO:-changecoin938/Tunnel}"
 TAG="${PAQET_TAG:-stable-latest}"
@@ -24,6 +25,7 @@ SKIP_SWAP="${PAQET_SKIP_SWAP:-0}"
 SWAP_SIZE="${PAQET_SWAP_SIZE:-2G}"
 GO_TARBALL_VERSION="${PAQET_GO_TARBALL_VERSION:-1.25.4}"
 GO_ALLOW_OFFICIAL="${PAQET_GO_ALLOW_OFFICIAL:-0}"
+PREFER_SOURCE="${PAQET_PREFER_SOURCE:-1}"
 
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -50,26 +52,28 @@ ensure_go_for_source_build() {
     fi
   fi
 
-  local urls=(
-    "https://mirrors.aliyun.com/golang/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
-  )
-  if [[ "${GO_ALLOW_OFFICIAL}" == "1" ]]; then
-    urls+=(
-      "https://go.dev/dl/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz?download=1"
-      "https://dl.google.com/go/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
-    )
-  fi
-
+  local versions=("${GO_TARBALL_VERSION}" "1.25.3" "1.25.2" "1.25.1" "1.25.0")
   local ok=0
-  for u in "${urls[@]}"; do
-    echo "Downloading Go toolchain: ${u}"
-    if curl -fL "${u}" -o "${tmp}/go.tgz"; then
-      ok=1
-      break
+  for v in "${versions[@]}"; do
+    local urls=(
+      "https://mirrors.aliyun.com/golang/go${v}.linux-${goarch}.tar.gz"
+    )
+    if [[ "${GO_ALLOW_OFFICIAL}" == "1" ]]; then
+      urls+=(
+        "https://go.dev/dl/go${v}.linux-${goarch}.tar.gz?download=1"
+        "https://dl.google.com/go/go${v}.linux-${goarch}.tar.gz"
+      )
     fi
+    for u in "${urls[@]}"; do
+      echo "Downloading Go toolchain: ${u}"
+      if curl -fL "${u}" -o "${tmp}/go.tgz"; then
+        ok=1
+        break 2
+      fi
+    done
   done
   if [[ "${ok}" != "1" ]]; then
-    echo "failed to download Go toolchain ${GO_TARBALL_VERSION}" >&2
+    echo "failed to download Go toolchain from configured mirrors" >&2
     exit 1
   fi
 
@@ -194,6 +198,11 @@ trap cleanup EXIT
 
 if [[ -n "${SOURCE_REF}" ]]; then
   install_from_source_ref "${SOURCE_REF}"
+  exit 0
+fi
+
+if [[ "${PREFER_SOURCE}" == "1" ]]; then
+  install_from_source_ref "main"
   exit 0
 fi
 
