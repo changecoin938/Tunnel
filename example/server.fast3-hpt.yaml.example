@@ -37,6 +37,9 @@ transport:
     key: "your-secret-key-here"
     guard: true
     guard_magic: "PQT1"
+    guard_window: 30
+    guard_skew: 1
+    header_timeout: 10
 
     # Server-side limits (recommended for this profile)
     max_sessions: 128

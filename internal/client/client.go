@@ -29,6 +29,7 @@ func New(cfg *conf.Conf) (*Client, error) {
 
 func (c *Client) Start(ctx context.Context) error {
 	connected := 0
+	items := make([]*timedConn, 0, c.cfg.Transport.Conn)
 	for i := range c.cfg.Transport.Conn {
 		tc, err := newTimedConn(ctx, c.cfg, i)
 		if tc == nil {
@@ -41,7 +42,11 @@ func (c *Client) Start(ctx context.Context) error {
 			connected++
 			flog.Debugf("client connection %d established successfully", i+1)
 		}
-		c.iter.Items = append(c.iter.Items, tc)
+		items = append(items, tc)
+	}
+	// Assign once before any goroutine reads from the iterator.
+	c.iter.Items = items
+	for _, tc := range c.iter.Items {
 		go tc.maintain()
 	}
 	if connected == 0 {

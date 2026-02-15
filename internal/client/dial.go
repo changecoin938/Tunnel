@@ -16,8 +16,8 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 	// Try each tunnel connection once (fail-fast). Background reconnect loops keep tunnels up.
 	n := len(c.iter.Items)
 	for i := 0; i < n; i++ {
-		tc := c.iter.Next()
-		if tc == nil {
+		tc, ok := c.iter.Next()
+		if !ok || tc == nil {
 			continue
 		}
 

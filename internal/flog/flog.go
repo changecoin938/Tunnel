@@ -24,6 +24,7 @@ var (
 	logCh     = make(chan string, 1024)
 	dropped   atomic.Uint64
 	startOnce sync.Once
+	closeOnce sync.Once
 )
 
 func init() {
@@ -111,4 +112,6 @@ func Fatalf(format string, args ...any) {
 	os.Exit(1)
 }
 
-func Close() { close(logCh) }
+func Close() {
+	closeOnce.Do(func() { close(logCh) })
+}

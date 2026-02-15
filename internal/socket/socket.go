@@ -102,6 +102,7 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 			if len(seg) > len(data) {
 				// Should never happen (kcp-go reads into a fixed 1500-byte buffer), but don't
 				// return an error: kcp-go treats ReadFrom errors as fatal.
+				diag.AddRawDownOversizeDrop(len(seg) + guardHeaderLen)
 				if len(c.pending) == 0 {
 					c.recyclePending()
 				}

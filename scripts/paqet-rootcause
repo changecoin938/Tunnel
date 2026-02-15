@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -uo pipefail
+set -euo pipefail
 
 # paqet-rootcause collects a best-effort support bundle on the server.
 # It is read-only (does not stop/restart services) and redacts secrets from config.

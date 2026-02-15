@@ -55,8 +55,15 @@ var Cmd = &cobra.Command{
 		signal.Notify(sigChan, os.Interrupt)
 		for {
 			select {
-			case packet := <-packets:
-				go handlePacket(packet)
+			case packet, ok := <-packets:
+				if !ok {
+					flog.Infof("Packet source closed, exiting.")
+					return
+				}
+				if packet == nil {
+					continue
+				}
+				handlePacket(packet)
 			case <-sigChan:
 				// handle.Close()
 				flog.Infof("Shutdown signal received, exiting.")

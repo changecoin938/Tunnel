@@ -28,8 +28,14 @@ func (d *Debug) validate() []error {
 	if d.Pprof == "" {
 		return errors
 	}
-	if _, err := net.ResolveTCPAddr("tcp", d.Pprof); err != nil {
+	addr, err := net.ResolveTCPAddr("tcp", d.Pprof)
+	if err != nil {
 		errors = append(errors, fmt.Errorf("debug pprof address '%s' is invalid: %v", d.Pprof, err))
+		return errors
+	}
+	// Refuse non-loopback binds: pprof exposes heap dumps, goroutine stacks, and CPU profiles.
+	if addr.IP == nil || addr.IP.IsUnspecified() || !addr.IP.IsLoopback() {
+		errors = append(errors, fmt.Errorf("debug.pprof bound to non-loopback address %q; this exposes profiling data publicly (use 127.0.0.1 or [::1])", d.Pprof))
 	}
 	return errors
 }

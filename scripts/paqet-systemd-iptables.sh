@@ -171,7 +171,7 @@ done
 
 if [[ "${action}" == "apply" ]]; then
   mkdir -p "${state_dir}" >/dev/null 2>&1 || true
-  printf "%s %s\n" "${port}" "$(( end_port - port + 1 ))" >"${state_file}" 2>/dev/null || true
+  printf "%s %s\n" "${port}" "${conn}" >"${state_file}" 2>/dev/null || true
 else
   rm -f "${state_file}" >/dev/null 2>&1 || true
 fi

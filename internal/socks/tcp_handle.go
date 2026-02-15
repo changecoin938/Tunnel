@@ -1,6 +1,7 @@
 package socks
 
 import (
+	"fmt"
 	"net"
 	"paqet/internal/diag"
 	"paqet/internal/flog"
@@ -27,7 +28,11 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 	flog.Debugf("SOCKS5 accepted TCP connection %s -> %s", conn.RemoteAddr(), r.Address())
 	defer conn.Close()
 
-	addr := conn.LocalAddr().(*net.TCPAddr)
+	la := conn.LocalAddr()
+	addr, ok := la.(*net.TCPAddr)
+	if !ok || addr == nil {
+		return fmt.Errorf("unexpected local address type: %T", la)
+	}
 	bufp := rPool.Get().(*[]byte)
 	defer rPool.Put(bufp)
 	buf := *bufp

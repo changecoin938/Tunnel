@@ -1,6 +1,7 @@
 package socks
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"paqet/internal/diag"
@@ -64,7 +65,11 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 }
 
 func (h *Handler) handleUDPAssociate(conn *net.TCPConn) error {
-	addr := conn.LocalAddr().(*net.TCPAddr)
+	la := conn.LocalAddr()
+	addr, ok := la.(*net.TCPAddr)
+	if !ok || addr == nil {
+		return fmt.Errorf("unexpected local address type: %T", la)
+	}
 
 	bufp := rPool.Get().(*[]byte)
 	defer rPool.Put(bufp)

@@ -351,9 +351,15 @@ func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
 	h.tcpF.mu.RLock()
 	defer h.tcpF.mu.RUnlock()
 	if ff := h.tcpF.clientTCPF[hash.IPAddr(dstIP, dstPort)]; ff != nil {
-		return ff.Next()
+		if f, ok := ff.Next(); ok {
+			return f
+		}
 	}
-	return h.tcpF.tcpF.Next()
+	if f, ok := h.tcpF.tcpF.Next(); ok {
+		return f
+	}
+	// Should be unreachable: config validation requires at least one TCP flag combo.
+	return conf.TCPF{PSH: true, ACK: true}
 }
 
 func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
