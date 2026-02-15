@@ -14,6 +14,7 @@ set -euo pipefail
 #   PAQET_SKIP_SWAP=1       (skip swap setup)
 #   PAQET_SWAP_SIZE=2G      (default: 2G)
 #   PAQET_GO_TARBALL_VERSION=1.25.4 (Go toolchain used for source builds)
+#   PAQET_GO_ALLOW_OFFICIAL=1 (allow fallback to go.dev/dl.google if Aliyun fails)
 
 REPO="${PAQET_REPO:-changecoin938/Tunnel}"
 TAG="${PAQET_TAG:-stable-latest}"
@@ -22,6 +23,7 @@ SKIP_SYSCTL="${PAQET_SKIP_SYSCTL:-0}"
 SKIP_SWAP="${PAQET_SKIP_SWAP:-0}"
 SWAP_SIZE="${PAQET_SWAP_SIZE:-2G}"
 GO_TARBALL_VERSION="${PAQET_GO_TARBALL_VERSION:-1.25.4}"
+GO_ALLOW_OFFICIAL="${PAQET_GO_ALLOW_OFFICIAL:-0}"
 
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -49,9 +51,14 @@ ensure_go_for_source_build() {
   fi
 
   local urls=(
-    "https://go.dev/dl/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz?download=1"
-    "https://dl.google.com/go/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
+    "https://mirrors.aliyun.com/golang/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
   )
+  if [[ "${GO_ALLOW_OFFICIAL}" == "1" ]]; then
+    urls+=(
+      "https://go.dev/dl/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz?download=1"
+      "https://dl.google.com/go/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
+    )
+  fi
 
   local ok=0
   for u in "${urls[@]}"; do
