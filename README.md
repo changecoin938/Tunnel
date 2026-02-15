@@ -283,7 +283,17 @@ For production tuning, see [`docs/production.md`](docs/production.md).
 
 ### Encryption Modes
 
-The `transport.kcp.block` parameter determines the encryption method. There are two special modes to disable encryption:
+The `transport.kcp.block` parameter determines the encryption method.
+
+**`aes-128-gcm`** (Default — Recommended)
+Authenticated encryption (AEAD) using AES-128 in Galois/Counter Mode. Each KCP packet is encrypted and authenticated with a 16-byte GCM tag; tampered packets are rejected before decryption. Hardware-accelerated on CPUs with AES-NI.
+
+**`aes`** (Legacy — Not Recommended)
+Encryption only (no authentication/integrity). A network observer cannot read packet contents, but can silently modify encrypted data without detection, causing corrupted data and hard-to-debug stream errors.
+
+Other cipher options (`aes-128`, `aes-192`, `salsa20`, `blowfish`, `twofish`, `cast5`, `3des`, `tea`, `xtea`, `sm4`) also provide encryption only. **`xor`** provides no meaningful security and exists for low-overhead testing.
+
+There are two special modes to disable encryption:
 
 **`none`** (Plaintext with Header)
 No encryption is applied, but a protocol header is still present. The packet format remains compatible with encrypted modes, but the content is plaintext. This helps with protocol compatibility.
@@ -303,6 +313,13 @@ Configuration (both sides must match):
 - `transport.kcp.guard_skew` (default: 1 previous window)
 
 > **Note:** The guard requires `transport.kcp.key` even if `transport.kcp.block` is `none`/`null`. If you truly want to run without a key (not recommended), set `transport.kcp.guard: false`.
+
+Packet flow (conceptual):
+
+```text
+Outgoing: plaintext -> KCP encrypt (e.g. AES-128-GCM + tag) -> Guard prepend (magic + cookie) -> wire
+Incoming: wire -> Guard validate/strip -> KCP decrypt (and verify tag in GCM) -> plaintext
+```
 
 ### Server-side Resource Limits (Recommended)
 
@@ -387,7 +404,7 @@ This means a rule like `ufw deny <PORT>` will have no effect on the proxy's oper
 
 ## ⚠️ Security Warning
 
-This project is an exploration of low-level networking and carries significant security responsibilities. The KCP transport protocol provides encryption, authentication, and integrity using symmetric encryption with a shared secret key.
+This project is an exploration of low-level networking and carries significant security responsibilities. The KCP transport protocol provides encryption using symmetric encryption with a shared secret key. When using the default `aes-128-gcm` mode, packets are also authenticated and integrity-verified via GCM tags. Other cipher modes provide encryption only.
 
 Security depends entirely on proper key management. Use the `secret` command to generate a strong key that must remain identical on both client and server.
 
