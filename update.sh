@@ -49,6 +49,7 @@ ensure_go_for_source_build() {
   fi
 
   local urls=(
+    "https://mirrors.aliyun.com/golang/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
     "https://go.dev/dl/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz?download=1"
     "https://dl.google.com/go/go${GO_TARBALL_VERSION}.linux-${goarch}.tar.gz"
   )
