@@ -14,7 +14,6 @@ const (
 	udpPoolIdleTimeoutDefault   = 60 * time.Second
 	udpPoolSweepIntervalDefault = 30 * time.Second
 	udpPoolTouchIntervalDefault = 5 * time.Second
-	udpPoolSweepScanLimit       = 512
 )
 
 type udpTrackedStrm struct {
@@ -120,10 +119,7 @@ func (p *udpPool) evict(now time.Time) {
 
 	var toClose []*udpTrackedStrm
 	p.mu.Lock()
-	toClose = append(toClose, p.evictIdleLocked(now, udpPoolSweepScanLimit)...)
-	if p.maxEntries > 0 && len(p.strms) > p.maxEntries {
-		toClose = append(toClose, p.evictOverflowLocked(len(p.strms)-p.maxEntries)...)
-	}
+	toClose = p.evictLocked(now)
 	p.mu.Unlock()
 
 	for _, strm := range toClose {
@@ -131,27 +127,15 @@ func (p *udpPool) evict(now time.Time) {
 	}
 }
 
-func (p *udpPool) evictForInsertLocked(now time.Time) []*udpTrackedStrm {
-	if p == nil || p.maxEntries <= 0 {
-		return nil
-	}
-	// Keep insertion path O(overflow) and avoid full-map scans under write lock.
-	if len(p.strms) >= p.maxEntries {
-		return p.evictOverflowLocked(len(p.strms) - p.maxEntries + 1)
-	}
-	// Opportunistic bounded idle cleanup when we are close to capacity.
-	return p.evictIdleLocked(now, 32)
-}
-
-func (p *udpPool) evictIdleLocked(now time.Time, maxScan int) []*udpTrackedStrm {
+func (p *udpPool) evictLocked(now time.Time) []*udpTrackedStrm {
 	if p == nil {
 		return nil
 	}
+
 	var toClose []*udpTrackedStrm
 
 	if p.idleTimeout > 0 {
 		cutoff := now.Add(-p.idleTimeout).UnixNano()
-		scanned := 0
 		for k, strm := range p.strms {
 			if strm == nil || strm.lastUsed.Load() < cutoff {
 				if strm != nil {
@@ -160,30 +144,24 @@ func (p *udpPool) evictIdleLocked(now time.Time, maxScan int) []*udpTrackedStrm 
 				}
 				delete(p.strms, k)
 			}
-			scanned++
-			if maxScan > 0 && scanned >= maxScan {
+		}
+	}
+
+	if p.maxEntries > 0 && len(p.strms) > p.maxEntries {
+		// Still over capacity: evict arbitrary entries (Go map iteration is randomized).
+		over := len(p.strms) - p.maxEntries
+		for k, strm := range p.strms {
+			if over <= 0 {
 				break
 			}
+			if strm != nil {
+				flog.Debugf("evicting UDP stream %d (pool full)", strm.SID())
+				toClose = append(toClose, strm)
+			}
+			delete(p.strms, k)
+			over--
 		}
 	}
-	return toClose
-}
 
-func (p *udpPool) evictOverflowLocked(overflow int) []*udpTrackedStrm {
-	if p == nil || overflow <= 0 {
-		return nil
-	}
-	var toClose []*udpTrackedStrm
-	for k, strm := range p.strms {
-		if overflow <= 0 {
-			break
-		}
-		if strm != nil {
-			flog.Debugf("evicting UDP stream %d (pool full)", strm.SID())
-			toClose = append(toClose, strm)
-		}
-		delete(p.strms, k)
-		overflow--
-	}
 	return toClose
 }

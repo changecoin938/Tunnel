@@ -55,7 +55,7 @@ func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 		c.udpPool.idleTimeout = udpPoolIdleTimeoutDefault
 	}
 	if c.udpPool.maxEntries > 0 && len(c.udpPool.strms) >= c.udpPool.maxEntries {
-		toClose = c.udpPool.evictForInsertLocked(time.Now())
+		toClose = c.udpPool.evictLocked(time.Now())
 	}
 	c.udpPool.strms[key] = tracked
 	c.udpPool.mu.Unlock()
