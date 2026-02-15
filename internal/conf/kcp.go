@@ -90,7 +90,7 @@ func (k *KCP) setDefaults(role string, connCount int) {
 	// }
 
 	if k.Block_ == "" {
-		k.Block_ = "aes"
+		k.Block_ = "aes-128-gcm"
 	}
 
 	// Default hardening: enable guard unless explicitly disabled.

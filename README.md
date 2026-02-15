@@ -144,7 +144,7 @@ server:
 transport:
   protocol: "kcp" # Transport protocol (currently only "kcp" supported)
   kcp:
-    block: "aes" # Encryption algorithm
+    block: "aes-128-gcm" # Encryption algorithm
     key: "your-secret-key-here" # CHANGE ME: Secret key (must match server)
 ```
 
@@ -173,7 +173,7 @@ network:
 transport:
   protocol: "kcp" # Transport protocol (currently only "kcp" supported)
   kcp:
-    block: "aes" # Encryption algorithm
+    block: "aes-128-gcm" # Encryption algorithm
     key: "your-secret-key-here" # CHANGE ME: Secret key (must match client)
 ```
 

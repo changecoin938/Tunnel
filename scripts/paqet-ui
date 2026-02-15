@@ -1299,7 +1299,7 @@ transport:
     mtu: ${KCP_MTU}
     rcvwnd: ${wnd}
     sndwnd: ${wnd}
-    block: "aes"
+    block: "aes-128-gcm"
     key: ${key_q}
     guard: true
     guard_magic: "PQT1"
@@ -1362,7 +1362,7 @@ transport:
     mtu: ${KCP_MTU}
     rcvwnd: ${wnd}
     sndwnd: ${wnd}
-    block: "aes"
+    block: "aes-128-gcm"
     key: ${key_q}
     guard: true
     guard_magic: "PQT1"

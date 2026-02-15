@@ -136,3 +136,11 @@ func TestPickMaxStreamsPerSession(t *testing.T) {
 		}
 	}
 }
+
+func TestKCPSetDefaults_BlockDefaultsToAES128GCM(t *testing.T) {
+	var k KCP
+	k.setDefaults("client", 1)
+	if k.Block_ != "aes-128-gcm" {
+		t.Fatalf("expected default block aes-128-gcm, got %q", k.Block_)
+	}
+}

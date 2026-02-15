@@ -33,7 +33,7 @@ transport:
     mtu: 1350
     rcvwnd: 8192
     sndwnd: 8192
-    block: "aes"
+    block: "aes-128-gcm"
     key: "your-secret-key-here"
     guard: true
     guard_magic: "PQT1"
