@@ -50,7 +50,9 @@ func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
 		flog.Errorf("failed to establish stream for %s -> %s: %v", conn.RemoteAddr(), f.targetAddr, err)
 		return err
 	}
+	diag.IncStreams()
 	defer func() {
+		diag.DecStreams()
 		flog.Debugf("TCP stream closed for %s -> %s", conn.RemoteAddr(), f.targetAddr)
 		_ = strm.Close()
 	}()

@@ -75,6 +75,7 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn) error 
 	diag.AddUDPUp(int64(n))
 	if new {
 		flog.Infof("accepted UDP connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
+		diag.IncStreams()
 		go f.handleUDPStrm(ctx, k, strm, conn, caddr)
 	}
 
@@ -85,6 +86,7 @@ func (f *Forward) handleUDPStrm(ctx context.Context, k uint64, strm tnet.Strm, c
 	bufp := buffer.UPool.Get().(*[]byte)
 	defer func() {
 		buffer.UPool.Put(bufp)
+		diag.DecStreams()
 		flog.Debugf("UDP stream %d closed for %s -> %s", strm.SID(), caddr, f.targetAddr)
 		f.client.CloseUDP(k)
 	}()
