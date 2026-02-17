@@ -27,12 +27,6 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 		perSem = make(chan struct{}, s.maxStreamsPerSession)
 	}
 	for {
-		select {
-		case <-ctx.Done():
-			flog.Debugf("stopping smux session for %v due to context cancellation", conn.RemoteAddr())
-			return
-		default:
-		}
 		strm, err := conn.AcceptStrm()
 		if err != nil {
 			if ctx.Err() != nil || diag.IsBenignStreamErr(err) {

@@ -3,7 +3,6 @@ package socket
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -142,7 +141,7 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 			cookies := g.getCookies()
 			ok := false
 			for i := range cookies.cookies {
-				if hmac.Equal(payload[4:12], cookies.cookies[i][:]) {
+				if bytes.Equal(payload[4:12], cookies.cookies[i][:]) {
 					ok = true
 					break
 				}
@@ -218,7 +217,7 @@ func findNextGuard(payload []byte, start int, g *guardState, cookies *guardCooki
 		}
 		ok := false
 		for k := range cookies.cookies {
-			if hmac.Equal(payload[pos+4:pos+12], cookies.cookies[k][:]) {
+			if bytes.Equal(payload[pos+4:pos+12], cookies.cookies[k][:]) {
 				ok = true
 				break
 			}
@@ -254,7 +253,7 @@ func (c *PacketConn) enqueueCoalesced(payload []byte, addr net.Addr, g *guardSta
 		}
 		ok := false
 		for k := range cookies.cookies {
-			if hmac.Equal(buf[pos+4:pos+12], cookies.cookies[k][:]) {
+			if bytes.Equal(buf[pos+4:pos+12], cookies.cookies[k][:]) {
 				ok = true
 				break
 			}

@@ -31,7 +31,8 @@ type guardState struct {
 	key [32]byte
 	mac sync.Pool
 
-	state atomic.Value // stores *guardCookies
+	state    atomic.Value // stores *guardCookies
+	hitCount atomic.Uint64
 }
 
 func newGuardState(k *conf.KCP) *guardState {
@@ -121,7 +122,7 @@ func (g *GuardConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 		cookies := g.st.getCookies()
 		ok := false
 		for i := range cookies.cookies {
-			if hmac.Equal(p[4:12], cookies.cookies[i][:]) {
+			if bytes.Equal(p[4:12], cookies.cookies[i][:]) {
 				ok = true
 				break
 			}
@@ -162,14 +163,18 @@ func (g *GuardConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 }
 
 func (g *guardState) getCookies() *guardCookies {
-	nowWin := uint64(time.Now().Unix() / g.windowSeconds)
 	if v := g.state.Load(); v != nil {
 		c := v.(*guardCookies)
+		if g.hitCount.Add(1)&1023 != 0 {
+			return c
+		}
+		nowWin := uint64(time.Now().Unix() / g.windowSeconds)
 		if c.win == nowWin {
 			return c
 		}
 	}
 
+	nowWin := uint64(time.Now().Unix() / g.windowSeconds)
 	out := &guardCookies{
 		win:     nowWin,
 		cookies: make([][8]byte, g.skew+1),

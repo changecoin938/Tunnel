@@ -136,11 +136,6 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 	}()
 	acceptBackoff := 100 * time.Millisecond
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
