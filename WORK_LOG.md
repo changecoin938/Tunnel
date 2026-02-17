@@ -44,3 +44,8 @@ This file is updated after each push/release.
 - Added safe action parsing in `iptables.sh` with `action="${1:-}"` and empty-arg no-op guard.
 - Updated systemd hooks to run helper via `/bin/bash` in `ExecStartPre`/`ExecStopPost`.
 - Prevented installer crash path that blocked summary output (client command/key visibility restored).
+
+### Main Push (Post v1.0.24)
+- Applied a minimal installer hotfix in `install.sh` based on live server feedback.
+- In generated `iptables.sh`, removed `set -euo pipefail` to avoid `$1` nounset crashes in edge invocations.
+- Reordered helper variable parsing so `action` is resolved before `PORT` assignment.
