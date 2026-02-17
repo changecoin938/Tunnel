@@ -61,12 +61,13 @@ func (k *KCP) setDefaults(role string, _ int) {
 	}
 
 	if k.Rcvwnd == 0 {
-		// 4096 packets ≈ 5.5MB per session at 1350 MTU. Balances throughput
-		// against memory for 100+ concurrent sessions on 4GB servers.
-		k.Rcvwnd = 4096
+		// 512 packets × 1350 MTU = 675KB per session.
+		// 500 sessions × 675KB × 2 (send+recv) = 660MB — fits in 4GB server.
+		// Higher values (e.g. 4096) cause OOM at 500 users (5.4GB for windows alone).
+		k.Rcvwnd = 512
 	}
 	if k.Sndwnd == 0 {
-		k.Sndwnd = 4096
+		k.Sndwnd = 512
 	}
 
 	// if k.Dshard == 0 {
@@ -107,14 +108,14 @@ func (k *KCP) setDefaults(role string, _ int) {
 	}
 
 	if k.Smuxbuf == 0 {
-		// 8MB session buffer gives adequate per-stream headroom under high
-		// concurrency (e.g. 256 streams × 32KB = 8MB).
-		k.Smuxbuf = 8 * 1024 * 1024
+		// 1MB per session × 500 sessions = 500MB. Enough for 256 streams per
+		// session (4KB each), and won't OOM a 4GB box.
+		k.Smuxbuf = 1 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		// 256KB per-stream buffer prevents small-stream starvation while
-		// keeping total memory reasonable (256 streams × 256KB = 64MB max).
-		k.Streambuf = 256 * 1024
+		// 64KB per stream. 500 users × ~10 streams × 64KB = 320MB max.
+		// Larger values (256KB) cause 4GB+ usage at 500 users with 16K streams.
+		k.Streambuf = 64 * 1024
 	}
 
 	// Match UI/examples defaults for server-side limits.

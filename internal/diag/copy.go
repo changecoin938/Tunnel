@@ -22,16 +22,63 @@ func CopyTCPDown(dst io.Writer, src io.Reader) error {
 	return err
 }
 
+// CopyUDPUp copies from a smux stream (src) to a real UDP connection (dst).
+// Unlike TCP, UDP datagrams are independent — a failed write is packet loss,
+// not a reason to sleep. This avoids the TCP-style 100ms retry that stalls
+// 500 concurrent goroutines and kills throughput.
 func CopyUDPUp(dst io.Writer, src io.Reader) error {
-	n, err := copyWithWriteRetry(dst, src, &buffer.UPool)
+	n, err := copyUDP(dst, src)
 	AddUDPUp(n)
 	return err
 }
 
+// CopyUDPDown copies from a real UDP connection (src) to a smux stream (dst).
 func CopyUDPDown(dst io.Writer, src io.Reader) error {
-	n, err := copyWithWriteRetry(dst, src, &buffer.UPool)
+	n, err := copyUDP(dst, src)
 	AddUDPDown(n)
 	return err
+}
+
+// copyUDP is a lightweight copy loop for UDP. It never sleeps on transient
+// errors (ENOBUFS/ENOMEM/EAGAIN) — it just drops the packet and continues.
+// This keeps goroutines available for actual work instead of sleeping.
+func copyUDP(dst io.Writer, src io.Reader) (int64, error) {
+	bufp := buffer.UPool.Get().(*[]byte)
+	defer buffer.UPool.Put(bufp)
+	buf := *bufp
+
+	var written int64
+	for {
+		nr, rerr := src.Read(buf)
+		if nr > 0 {
+			nw, werr := dst.Write(buf[:nr])
+			if nw > 0 {
+				written += int64(nw)
+			}
+			if werr != nil {
+				// ENOBUFS/EAGAIN on a UDP write = packet loss, not fatal.
+				// Don't sleep — just drop and read the next packet.
+				if isTransientBackpressure(werr) {
+					if IsNoBufferOrNoMem(werr) {
+						AddEnobufsRetry()
+					}
+					// Continue reading; the dropped packet is acceptable for UDP.
+					if rerr == nil {
+						continue
+					}
+					// If read also had an error, fall through to check it.
+				} else {
+					return written, werr
+				}
+			}
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return written, nil
+			}
+			return written, rerr
+		}
+	}
 }
 
 func copyWithWriteRetry(dst io.Writer, src io.Reader, pool *sync.Pool) (int64, error) {
