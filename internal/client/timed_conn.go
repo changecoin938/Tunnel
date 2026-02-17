@@ -69,10 +69,9 @@ func (tc *timedConn) createConn() (tnet.Conn, error) {
 		}
 
 		// Verify the tunnel is actually up (and the key matches) before exposing it.
-		timeout := 5 * time.Second
+		timeout := 10 * time.Second
 		if i == 0 && len(candidates) > 1 {
-			// First candidate is the "offset port" probe. Fail fast to avoid slow startups.
-			timeout = 1 * time.Second
+			timeout = 3 * time.Second
 		}
 		if err := pingConn(conn, timeout); err != nil {
 			lastErr = err

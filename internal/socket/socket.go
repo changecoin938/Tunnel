@@ -351,39 +351,14 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	}
 	// libpcap returns plain string errors via pcap_geterr (no errno), so also
 	// match by message to detect ENOBUFS/ENOMEM.
-	if !(errors.Is(err, syscall.ENOBUFS) ||
+	if errors.Is(err, syscall.ENOBUFS) ||
 		errors.Is(err, syscall.ENOMEM) ||
 		strings.Contains(err.Error(), "No buffer space available") ||
-		strings.Contains(err.Error(), "Cannot allocate memory")) {
-		return 0, err
-	}
-
-	// Transient kernel buffer pressure: retry briefly with exponential backoff.
-	backoff := 200 * time.Microsecond
-	for retries := 0; retries < 6; retries++ {
+		strings.Contains(err.Error(), "Cannot allocate memory") {
 		diag.AddRawUpDrop(wireLen)
-		time.Sleep(backoff)
-		if backoff < 5*time.Millisecond {
-			backoff *= 2
-			if backoff > 5*time.Millisecond {
-				backoff = 5 * time.Millisecond
-			}
-		}
-		err = writeOnce()
-		if err == nil {
-			diag.AddRawUp(wireLen)
-			return len(data), nil
-		}
-		if !(errors.Is(err, syscall.ENOBUFS) ||
-			errors.Is(err, syscall.ENOMEM) ||
-			strings.Contains(err.Error(), "No buffer space available") ||
-			strings.Contains(err.Error(), "Cannot allocate memory")) {
-			return 0, err
-		}
+		return len(data), nil
 	}
-
-	diag.AddRawUpDrop(wireLen)
-	return len(data), nil
+	return 0, err
 }
 
 func (c *PacketConn) Close() error {

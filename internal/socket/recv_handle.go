@@ -7,6 +7,7 @@ import (
 	"paqet/internal/conf"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gopacket/gopacket/pcap"
 )
@@ -14,7 +15,8 @@ import (
 type RecvHandle struct {
 	handle *pcap.Handle
 
-	addrCache sync.Map // map[addrKey]*net.UDPAddr
+	addrCache    sync.Map // map[addrKey]*net.UDPAddr
+	addrCacheLen atomic.Int64
 }
 
 func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
@@ -107,6 +109,13 @@ func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 		if a, ok := prev.(*net.UDPAddr); ok && a != nil {
 			return a
 		}
+	}
+	if h.addrCacheLen.Add(1) > 65536 {
+		h.addrCache.Range(func(key, _ any) bool {
+			h.addrCache.Delete(key)
+			return true
+		})
+		h.addrCacheLen.Store(0)
 	}
 	return addr
 }
