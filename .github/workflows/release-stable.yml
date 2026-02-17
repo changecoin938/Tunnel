@@ -29,7 +29,7 @@ jobs:
         runs-on: ubuntu-latest
         needs: [tag-stable-latest]
         container:
-            image: golang:1.23
+            image: golang:1.24
         strategy:
             matrix:
                 goarch: [amd64, arm64]
