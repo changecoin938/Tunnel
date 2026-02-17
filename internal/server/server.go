@@ -110,7 +110,11 @@ func (s *Server) Start() error {
 		flog.Infof("Server started - listening for packets on :%d", basePort)
 	}
 
-	// Do not wait forever: pcap-backed reads can remain blocked on some platforms.
+	// Block until shutdown signal (context cancellation).
+	<-ctx.Done()
+	flog.Infof("Shutdown signal received, waiting for listeners to stop...")
+
+	// Now give goroutines a deadline to finish.
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()
