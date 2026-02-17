@@ -125,30 +125,6 @@ func (k *KCP) setDefaults(role string, _ int) {
 	}
 }
 
-func pickKCPWindow(_, _ int) int {
-	return 8192
-}
-
-func pickMaxSessions(_ int) int {
-	return 128
-}
-
-func pickSmuxBuf(_, _ int) int {
-	return 16 * 1024 * 1024
-}
-
-func pickStreamBuf(_ int) int {
-	return 4 * 1024 * 1024
-}
-
-func pickMaxStreamsTotal(_, _ int) int {
-	return 16384
-}
-
-func pickMaxStreamsPerSession(_ int) int {
-	return 4096
-}
-
 func (k *KCP) validate() []error {
 	var errors []error
 
