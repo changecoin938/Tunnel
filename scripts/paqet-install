@@ -4,13 +4,13 @@ set -euo pipefail
 ###############################################################################
 # paqet-install  —  one-command installer for paqet v0.1.28
 #
-# Server (Kharej):
-#   curl -sL URL | bash -s -- server KEY
+# Step 1 — Run on Kharej (server):
+#   curl -sL URL | bash -s -- server
+#   → auto-detects IP, generates key, prints client command
 #
-# Client (Iran):
+# Step 2 — Run on Iran (client) — copy from server output:
 #   curl -sL URL | bash -s -- client SERVER_IP KEY
 #
-# IP, MAC, interface are auto-detected. No questions asked.
 ###############################################################################
 
 VERSION="v0.1.28"
@@ -24,10 +24,12 @@ SERVICE_NAME="paqet"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
 info()  { printf "${GREEN}[+]${NC} %s\n" "$*"; }
+warn()  { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
 error() { printf "${RED}[✗]${NC} %s\n" "$*" >&2; }
 die()   { error "$*"; exit 1; }
 
@@ -35,20 +37,31 @@ die()   { error "$*"; exit 1; }
 
 # ─── Parse args ──────────────────────────────────────────────────────────────
 ROLE="${1:-}"
+INSTALL_URL="https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts/paqet-install"
 
 if [[ "${ROLE}" == "server" ]]; then
+  # Server: no args needed — auto-detect IP, auto-generate key
   KEY="${2:-}"
-  [[ -n "${KEY}" ]] || die "Usage: ... | bash -s -- server KEY"
+  # Generate key if not provided
+  if [[ -z "${KEY}" ]]; then
+    KEY="$(openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  fi
 
 elif [[ "${ROLE}" == "client" ]]; then
   SERVER_IP="${2:-}"; KEY="${3:-}"
-  [[ -n "${SERVER_IP}" && -n "${KEY}" ]] || die "Usage: ... | bash -s -- client SERVER_IP KEY"
+  if [[ -z "${SERVER_IP}" || -z "${KEY}" ]]; then
+    echo ""
+    echo "Usage:  curl -sL URL | bash -s -- client SERVER_IP KEY"
+    echo ""
+    echo "Get SERVER_IP and KEY from server install output."
+    die "Missing SERVER_IP or KEY"
+  fi
 
 else
   echo ""
   printf "${CYAN}paqet ${VERSION} Installer${NC}\n\n"
-  echo "  Server:  curl -sL URL | bash -s -- server KEY"
-  echo "  Client:  curl -sL URL | bash -s -- client SERVER_IP KEY"
+  echo "Step 1 — Kharej (server):  curl -sL ${INSTALL_URL} | bash -s -- server"
+  echo "Step 2 — Iran (client):    copy the command from server output"
   echo ""
   die "First argument must be 'server' or 'client'"
 fi
@@ -58,73 +71,34 @@ CLIENT_PORT="20000"
 
 # ─── Auto-detect network ────────────────────────────────────────────────────
 detect_network() {
-  # Interface
   IFACE="$(ip -o route get 8.8.8.8 2>/dev/null | sed -n 's/.*dev \([^ ]*\).*/\1/p')"
-  if [[ -z "${IFACE}" ]]; then
-    die "Cannot detect interface"
-  fi
+  [[ -n "${IFACE}" ]] || die "Cannot detect interface"
 
-  # IP — use the src from route get (most reliable)
   IP="$(ip -o route get 8.8.8.8 2>/dev/null | sed -n 's/.*src \([^ ]*\).*/\1/p')"
   if [[ -z "${IP}" ]]; then
-    # fallback to interface address
     IP="$(ip -4 addr show "${IFACE}" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')"
   fi
-  if [[ -z "${IP}" ]]; then
-    die "Cannot detect IP"
-  fi
+  [[ -n "${IP}" ]] || die "Cannot detect IP"
 
-  # Gateway IP
   local gw_ip
   gw_ip="$(ip route show default 2>/dev/null | sed -n 's/.*via \([^ ]*\).*/\1/p' | head -1)"
-  if [[ -z "${gw_ip}" ]]; then
-    die "Cannot detect gateway"
-  fi
+  [[ -n "${gw_ip}" ]] || die "Cannot detect gateway"
 
-  # Gateway MAC — ping first to ensure ARP entry exists
   ping -c2 -W2 -q "${gw_ip}" >/dev/null 2>&1 || true
   sleep 1
 
-  # Read MAC from ARP/neighbor table
   MAC=""
-
-  # Method 1: ip neigh (specific gateway + interface)
-  if [[ -z "${MAC}" ]]; then
-    MAC="$(ip neigh show "${gw_ip}" dev "${IFACE}" 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
-  fi
-
-  # Method 2: ip neigh (specific gateway, any interface)
-  if [[ -z "${MAC}" ]]; then
-    MAC="$(ip neigh show "${gw_ip}" 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
-  fi
-
-  # Method 3: ip neigh (any entry on interface)
-  if [[ -z "${MAC}" ]]; then
-    MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
-  fi
-
-  # Method 4: arp command
-  if [[ -z "${MAC}" ]]; then
-    MAC="$(arp -n "${gw_ip}" 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
-  fi
-
-  # Method 5: cat /proc/net/arp
-  if [[ -z "${MAC}" ]]; then
-    MAC="$(grep "${gw_ip} " /proc/net/arp 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
-  fi
+  MAC="$(ip neigh show "${gw_ip}" dev "${IFACE}" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+  [[ -n "${MAC}" ]] || MAC="$(ip neigh show "${gw_ip}" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+  [[ -n "${MAC}" ]] || MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+  [[ -n "${MAC}" ]] || MAC="$(arp -n "${gw_ip}" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+  [[ -n "${MAC}" ]] || MAC="$(grep "${gw_ip} " /proc/net/arp 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
 
   if [[ -z "${MAC}" ]]; then
-    error "Cannot detect gateway MAC address"
-    error "Gateway IP: ${gw_ip}"
-    error "Interface:  ${IFACE}"
-    echo ""
-    echo "Debug info:"
+    error "Cannot detect gateway MAC"
     echo "--- ip neigh ---"
     ip neigh 2>/dev/null || true
-    echo "--- arp -n ---"
-    arp -n 2>/dev/null || true
-    echo ""
-    die "Please report the above output"
+    die "MAC detection failed"
   fi
 }
 
@@ -132,11 +106,7 @@ detect_network
 
 info "Interface : ${IFACE}"
 info "IP        : ${IP}"
-info "Gateway   : ${MAC}"
-info "Role      : ${ROLE}"
-if [[ "${ROLE}" == "client" ]]; then
-  info "Server    : ${SERVER_IP}:${PORT}"
-fi
+info "MAC       : ${MAC}"
 
 # ─── Download binary ─────────────────────────────────────────────────────────
 info "Downloading paqet ${VERSION} ..."
@@ -154,16 +124,14 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 
 curl -fsSL "${URL}" -o "${TMP_DIR}/paqet.tar.gz"
 tar xzf "${TMP_DIR}/paqet.tar.gz" -C "${TMP_DIR}"
-[[ -f "${TMP_DIR}/${BIN_TAR}" ]] || die "Binary not found in tarball"
+[[ -f "${TMP_DIR}/${BIN_TAR}" ]] || die "Binary not found"
 
 systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
 install -m 0755 "${TMP_DIR}/${BIN_TAR}" "${BIN_DIR}/paqet"
 info "Binary installed"
 
 # ─── Helper scripts ──────────────────────────────────────────────────────────
-info "Installing scripts ..."
 mkdir -p "${LIB_DIR}"
-
 SCRIPTS_URL="https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts"
 for s in paqet-iptables.sh paqet-systemd-iptables.sh; do
   curl -fsSL "${SCRIPTS_URL}/${s}" -o "${LIB_DIR}/${s}"
@@ -263,10 +231,7 @@ forward:
 YAML
 fi
 
-info "Config: ${CONF_FILE}"
-
 # ─── Systemd ────────────────────────────────────────────────────────────────
-info "Installing service ..."
 cat > "${SERVICE_FILE}" <<'UNIT'
 [Unit]
 Description=paqet tunnel
@@ -297,22 +262,28 @@ sleep 2
 if systemctl is-active --quiet "${SERVICE_NAME}"; then
   info "paqet is running!"
 else
-  error "Not active. Check: journalctl -u paqet -f"
+  warn "Not active yet. Check: journalctl -u paqet -f"
 fi
 
+# ─── Output ──────────────────────────────────────────────────────────────────
 echo ""
-info "Done! Config: ${CONF_FILE}"
-info "Logs: journalctl -u paqet -f"
-echo ""
-
-# ─── Show client command if this is a server install ─────────────────────────
 if [[ "${ROLE}" == "server" ]]; then
-  INSTALL_URL="https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts/paqet-install"
-  echo ""
-  printf "${CYAN}══════════════════════════════════════════════════════${NC}\n"
-  printf "${CYAN} Copy this command and run it on IRAN (client) server:${NC}\n"
-  printf "${CYAN}══════════════════════════════════════════════════════${NC}\n"
+  printf "${GREEN}══════════════════════════════════════════════════════════${NC}\n"
+  printf "${GREEN} Server done! Now run this on your IRAN (client) server: ${NC}\n"
+  printf "${GREEN}══════════════════════════════════════════════════════════${NC}\n"
   echo ""
   echo "curl -sL ${INSTALL_URL} | bash -s -- client ${IP} ${KEY}"
+  echo ""
+  printf "${YELLOW}Save these values:${NC}\n"
+  echo "  Server IP : ${IP}"
+  echo "  Key       : ${KEY}"
+  echo ""
+else
+  printf "${GREEN}══════════════════════════════════════════════════════════${NC}\n"
+  printf "${GREEN} Client done! Tunnel is ready.                            ${NC}\n"
+  printf "${GREEN}══════════════════════════════════════════════════════════${NC}\n"
+  echo ""
+  info "Config: ${CONF_FILE}"
+  info "Logs:   journalctl -u paqet -f"
   echo ""
 fi
