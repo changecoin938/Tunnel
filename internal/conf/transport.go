@@ -9,15 +9,13 @@ import (
 type Transport struct {
 	Protocol string `yaml:"protocol"`
 	Conn     int    `yaml:"conn"`
+	TCPBuf   int    `yaml:"tcpbuf"`
+	UDPBuf   int    `yaml:"udpbuf"`
 	KCP      *KCP   `yaml:"kcp"`
 }
 
 func (t *Transport) setDefaults(role string) {
 	if t.Conn == 0 {
-		// Default to NumCPU pcap handles. Each handle has its own kernel buffer
-		// and lock, so more handles = less contention under high concurrency.
-		// On a 4-core server with 500 users, 4 handles reduce per-handle load
-		// from 250 users/handle (conn=2) to 125 users/handle.
 		t.Conn = runtime.NumCPU()
 		if t.Conn < 2 {
 			t.Conn = 2
@@ -26,12 +24,23 @@ func (t *Transport) setDefaults(role string) {
 			t.Conn = 16
 		}
 	}
+
+	if t.TCPBuf == 0 {
+		t.TCPBuf = 8 * 1024
+	}
+	if t.TCPBuf < 4*1024 {
+		t.TCPBuf = 4 * 1024
+	}
+	if t.UDPBuf == 0 {
+		t.UDPBuf = 4 * 1024
+	}
+	if t.UDPBuf < 2*1024 {
+		t.UDPBuf = 2 * 1024
+	}
+
 	switch t.Protocol {
 	case "kcp":
-		if t.KCP == nil {
-			t.KCP = &KCP{}
-		}
-		t.KCP.setDefaults(role, t.Conn)
+		t.KCP.setDefaults(role)
 	}
 }
 
@@ -49,10 +58,6 @@ func (t *Transport) validate() []error {
 
 	switch t.Protocol {
 	case "kcp":
-		if t.KCP == nil {
-			errors = append(errors, fmt.Errorf("transport.kcp is required when transport.protocol is 'kcp'"))
-			break
-		}
 		errors = append(errors, t.KCP.validate()...)
 	}
 

@@ -10,7 +10,6 @@ import (
 	"paqet/internal/forward"
 	"paqet/internal/socks"
 	"syscall"
-	"time"
 )
 
 func startClient(cfg *conf.Conf) {
@@ -30,7 +29,7 @@ func startClient(cfg *conf.Conf) {
 		flog.Fatalf("Failed to initialize client: %v", err)
 	}
 	if err := client.Start(ctx); err != nil {
-		flog.Fatalf("Client failed to start: %v", err)
+		flog.Infof("Client encountered an error: %v", err)
 	}
 
 	for _, ss := range cfg.SOCKS5 {
@@ -53,7 +52,4 @@ func startClient(cfg *conf.Conf) {
 	}
 
 	<-ctx.Done()
-	if !client.WaitShutdown(2 * time.Second) {
-		flog.Warnf("Client shutdown cleanup timed out after 2s")
-	}
 }

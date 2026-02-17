@@ -1,12 +1,10 @@
 package run
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"log"
 	"paqet/internal/conf"
-	"paqet/internal/diag"
 	"paqet/internal/flog"
+	"paqet/internal/pkg/buffer"
 
 	"github.com/spf13/cobra"
 )
@@ -43,41 +41,5 @@ var Cmd = &cobra.Command{
 
 func initialize(cfg *conf.Conf) {
 	flog.SetLevel(cfg.Log.Level)
-	diag.Enable(cfg.Debug.Diag)
-	guard := false
-	if cfg.Transport.KCP != nil && cfg.Transport.KCP.Guard != nil && *cfg.Transport.KCP.Guard {
-		guard = true
-	}
-	if cfg.Debug.Diag {
-		keyID := ""
-		if cfg.Transport.KCP != nil && cfg.Transport.KCP.Key != "" {
-			sum := sha256.Sum256([]byte(cfg.Transport.KCP.Key))
-			keyID = hex.EncodeToString(sum[:8])
-		}
-		diag.SetConfig(diag.ConfigInfo{
-			Role:      cfg.Role,
-			Interface: cfg.Network.Interface_,
-			DSCP:      cfg.Network.DSCP,
-			IPv4Addr:  cfg.Network.IPv4.Addr_,
-			IPv6Addr:  cfg.Network.IPv6.Addr_,
-			ServerAddr: func() string {
-				if cfg.Role == "client" {
-					return cfg.Server.Addr_
-				}
-				return ""
-			}(),
-			ListenAddr: func() string {
-				if cfg.Role == "server" {
-					return cfg.Listen.Addr_
-				}
-				return ""
-			}(),
-			Pprof: cfg.Debug.Pprof,
-			Guard: guard,
-			Conns: cfg.Transport.Conn,
-			KeyID: keyID,
-		})
-		diag.RegisterHTTP()
-	}
-	startPprof(cfg.Debug.Pprof)
+	buffer.Initialize(cfg.Transport.TCPBuf, cfg.Transport.UDPBuf)
 }

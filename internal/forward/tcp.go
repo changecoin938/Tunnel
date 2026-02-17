@@ -3,9 +3,8 @@ package forward
 import (
 	"context"
 	"net"
-
-	"paqet/internal/diag"
 	"paqet/internal/flog"
+	"paqet/internal/pkg/buffer"
 )
 
 func (f *Forward) listenTCP(ctx context.Context) error {
@@ -45,42 +44,35 @@ func (f *Forward) listenTCP(ctx context.Context) error {
 }
 
 func (f *Forward) handleTCPConn(ctx context.Context, conn net.Conn) error {
-	strm, err := f.client.TCP(ctx, f.targetAddr)
+	strm, err := f.client.TCP(f.targetAddr)
 	if err != nil {
 		flog.Errorf("failed to establish stream for %s -> %s: %v", conn.RemoteAddr(), f.targetAddr, err)
 		return err
 	}
 	defer func() {
 		flog.Debugf("TCP stream closed for %s -> %s", conn.RemoteAddr(), f.targetAddr)
-		_ = strm.Close()
+		defer strm.Close()
 	}()
-	flog.Debugf("accepted TCP connection %s -> %s", conn.RemoteAddr(), f.targetAddr)
+	flog.Infof("accepted TCP connection %s -> %s", conn.RemoteAddr(), f.targetAddr)
 
-	errDown, errUp := diag.BidiCopy(
-		ctx,
-		conn,
-		strm,
-		func() error { return diag.CopyTCPDown(conn, strm) },
-		func() error { return diag.CopyTCPUp(strm, conn) },
-	)
+	errCh := make(chan error, 2)
+	go func() {
+		err := buffer.CopyT(conn, strm)
+		errCh <- err
+	}()
+	go func() {
+		err := buffer.CopyT(strm, conn)
+		errCh <- err
+	}()
 
-	if ctx.Err() != nil {
-		return nil
+	select {
+	case err := <-errCh:
+		if err != nil {
+			flog.Errorf("TCP stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, err)
+			return err
+		}
+	case <-ctx.Done():
 	}
 
-	// ENOBUFS/ENOMEM is transient — never tear down the connection for it.
-	if diag.IsNoBufferOrNoMem(errDown) || diag.IsNoBufferOrNoMem(errUp) {
-		flog.Debugf("TCP stream %d for %s -> %s hit ENOBUFS (benign): down=%v up=%v", strm.SID(), conn.RemoteAddr(), f.targetAddr, errDown, errUp)
-		return nil
-	}
-
-	if !diag.IsBenignStreamErr(errDown) {
-		flog.Errorf("TCP stream %d failed for %s -> %s (down): %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, errDown)
-		return errDown
-	}
-	if !diag.IsBenignStreamErr(errUp) {
-		flog.Errorf("TCP stream %d failed for %s -> %s (up): %v", strm.SID(), conn.RemoteAddr(), f.targetAddr, errUp)
-		return errUp
-	}
 	return nil
 }

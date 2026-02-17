@@ -7,15 +7,17 @@ type Iterator[T any] struct {
 	index atomic.Uint64
 }
 
-func (it *Iterator[T]) Next() (T, bool) {
-	n := uint64(len(it.Items))
-	if n == 0 {
-		var zero T
-		return zero, false
-	}
+func (it *Iterator[T]) Next() T {
 	i := it.index.Add(1)
+	n := uint64(len(it.Items))
 	if n&(n-1) == 0 {
-		return it.Items[i&(n-1)], true
+		return it.Items[i&(n-1)]
 	}
-	return it.Items[i%n], true
+	return it.Items[i%n]
+}
+
+func (it *Iterator[T]) Peek() T {
+	n := len(it.Items)
+	i := it.index.Load()
+	return it.Items[i%uint64(n)]
 }

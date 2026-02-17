@@ -13,7 +13,6 @@ import (
 type Conf struct {
 	Role      string    `yaml:"role"`
 	Log       Log       `yaml:"log"`
-	Debug     Debug     `yaml:"debug"`
 	Listen    Server    `yaml:"listen"`
 	SOCKS5    []SOCKS5  `yaml:"socks5"`
 	Forward   []Forward `yaml:"forward"`
@@ -31,20 +30,7 @@ func LoadFromFile(path string) (*Conf, error) {
 	var conf Conf
 
 	if err := yaml.Unmarshal(data, &conf); err != nil {
-		repaired, changed, repairReason := tryRepairConfig(data)
-		if !changed {
-			return &conf, err
-		}
-
-		var repairedConf Conf
-		if err2 := yaml.Unmarshal(repaired, &repairedConf); err2 != nil {
-			// Repair attempt didn't help; surface original error.
-			return &conf, err
-		}
-
-		// Best-effort persistence so systemd restarts don't keep failing.
-		_ = persistRepairedConfig(path, data, repaired, repairReason)
-		conf = repairedConf
+		return &conf, err
 	}
 
 	validRoles := []string{"client", "server"}
@@ -62,7 +48,6 @@ func LoadFromFile(path string) (*Conf, error) {
 
 func (c *Conf) setDefaults() {
 	c.Log.setDefaults()
-	c.Debug.setDefaults()
 	c.Listen.setDefaults()
 	for i := range c.SOCKS5 {
 		c.SOCKS5[i].setDefaults()
@@ -79,7 +64,6 @@ func (c *Conf) validate() error {
 	var allErrors []error
 
 	allErrors = append(allErrors, c.Log.validate()...)
-	allErrors = append(allErrors, c.Debug.validate()...)
 	if c.Role == "client" && len(c.SOCKS5) == 0 && len(c.Forward) == 0 {
 		flog.Warnf("warning: client mode enabled but no SOCKS5 or forward configurations found")
 	}
@@ -101,30 +85,16 @@ func (c *Conf) validate() error {
 	allErrors = append(allErrors, c.Transport.validate()...)
 	if c.Role == "server" {
 		allErrors = append(allErrors, c.Listen.validate()...)
-		if c.Network.Port == 0 {
-			allErrors = append(allErrors, fmt.Errorf("server network port cannot be 0 (set network.ipv4.addr/network.ipv6.addr port)"))
-		}
-		if c.Listen.Addr != nil && c.Network.Port != 0 && c.Listen.Addr.Port != c.Network.Port {
-			allErrors = append(allErrors, fmt.Errorf("server listen.addr port (%d) must match network port (%d)", c.Listen.Addr.Port, c.Network.Port))
-		}
-		if c.Transport.Conn > 1 && c.Network.Port != 0 {
-			base := c.Network.Port
-			last := base + c.Transport.Conn - 1
-			if last > 65535 {
-				allErrors = append(allErrors, fmt.Errorf("server port range too large: base=%d conn=%d => last=%d (max 65535)", base, c.Transport.Conn, last))
-			}
-		}
 	} else {
 		allErrors = append(allErrors, c.Server.validate()...)
+		if c.Server.Addr.IP.To4() != nil && c.Network.IPv4.Addr == nil {
+			allErrors = append(allErrors, fmt.Errorf("server address is IPv4, but the IPv4 interface is not configured"))
+		}
 		if c.Server.Addr.IP.To4() == nil && c.Network.IPv6.Addr == nil {
 			allErrors = append(allErrors, fmt.Errorf("server address is IPv6, but the IPv6 interface is not configured"))
 		}
 		if c.Transport.Conn > 1 && c.Network.Port != 0 {
-			base := c.Network.Port
-			last := base + c.Transport.Conn - 1
-			if last > 65535 {
-				allErrors = append(allErrors, fmt.Errorf("client port range too large: base=%d conn=%d => last=%d (max 65535)", base, c.Transport.Conn, last))
-			}
+			allErrors = append(allErrors, fmt.Errorf("only one connection is allowed when a client port is explicitly set"))
 		}
 	}
 	return writeErr(allErrors)

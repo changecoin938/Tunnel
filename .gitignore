@@ -41,8 +41,3 @@ Thumbs.db
 build/
 dist/
 tmp/
-
-# Cursor / local workspace artifacts
-*.code-workspace
-workspace.code-workspace
-cursor_tunnel_setup_and_simplification.md

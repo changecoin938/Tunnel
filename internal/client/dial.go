@@ -1,74 +1,45 @@
 package client
 
 import (
-	"context"
-	"errors"
+	"fmt"
 	"paqet/internal/flog"
 	"paqet/internal/tnet"
 	"time"
 )
 
-var errNoTunnelConnections = errors.New("no tunnel connections available")
-
-func (c *Client) newStrm(ctx context.Context) (tnet.Strm, error) {
-	if c == nil || c.iter == nil || len(c.iter.Items) == 0 {
-		return nil, errNoTunnelConnections
+func (c *Client) newConn() (tnet.Conn, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	autoExpire := 300
+	tc := c.iter.Next()
+	go tc.sendTCPF(tc.conn)
+	err := tc.conn.Ping(false)
+	if err != nil {
+		flog.Infof("connection lost, retrying....")
+		if tc.conn != nil {
+			tc.conn.Close()
+		}
+		if c, err := tc.createConn(); err == nil {
+			tc.conn = c
+		}
+		tc.expire = time.Now().Add(time.Duration(autoExpire) * time.Second)
 	}
+	return tc.conn, nil
+}
 
-	// Try each tunnel connection once per attempt. On cold start or during reconnects,
-	// briefly wait for any tunnel to come up to avoid immediate user-visible failures.
-	//
-	// This is especially important during reinstall/restart where tunnel dials happen
-	// in background and may take a few seconds.
-	deadline := time.Now().Add(3 * time.Second)
-	kicked := false
-	for {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+func (c *Client) newStrm() (tnet.Strm, error) {
+	for i := 0; i < 5; i++ {
+		conn, err := c.newConn()
+		if err != nil || conn == nil {
+			time.Sleep(200 * time.Millisecond)
+			continue
 		}
-
-		n := len(c.iter.Items)
-		for i := 0; i < n; i++ {
-			tc, ok := c.iter.Next()
-			if !ok || tc == nil {
-				continue
-			}
-
-			conn := tc.getConn()
-			if conn == nil {
-				if !kicked {
-					tc.kickReconnect()
-				}
-				continue
-			}
-
-			strm, err := conn.OpenStrm()
-			if err == nil {
-				return strm, nil
-			}
-
-			flog.Debugf("failed to open stream, reconnecting in background: %v", err)
-			tc.markBroken(conn)
+		strm, err := conn.OpenStrm()
+		if err != nil {
+			time.Sleep(200 * time.Millisecond)
+			continue
 		}
-		kicked = true // Only kick reconnects once to avoid thundering-herd.
-
-		if time.Now().After(deadline) {
-			return nil, errNoTunnelConnections
-		}
-
-		// Wait for a connection to become ready instead of busy-polling.
-		// This reduces CPU usage and avoids thundering-herd reconnect storms.
-		remaining := time.Until(deadline)
-		waitTimer := time.NewTimer(remaining)
-		select {
-		case <-ctx.Done():
-			waitTimer.Stop()
-			return nil, ctx.Err()
-		case <-c.getConnReady():
-			waitTimer.Stop()
-			// A connection may be ready, retry immediately.
-		case <-waitTimer.C:
-			// Timeout reached, will check deadline at loop top.
-		}
+		return strm, nil
 	}
+	return nil, fmt.Errorf("failed to open stream after 5 attempts")
 }

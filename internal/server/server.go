@@ -5,47 +5,25 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
+	"syscall"
+
 	"paqet/internal/conf"
-	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/socket"
 	"paqet/internal/tnet"
 	"paqet/internal/tnet/kcp"
-	"sync"
-	"syscall"
-	"time"
 )
 
 type Server struct {
-	cfg *conf.Conf
-	wg  sync.WaitGroup
-
-	sessSem              chan struct{}
-	streamSem            chan struct{}
-	maxStreamsPerSession int
-	headerTimeout        time.Duration
+	cfg   *conf.Conf
+	pConn *socket.PacketConn
+	wg    sync.WaitGroup
 }
 
 func New(cfg *conf.Conf) (*Server, error) {
 	s := &Server{
 		cfg: cfg,
-	}
-
-	if cfg.Transport.KCP != nil {
-		k := cfg.Transport.KCP
-		s.headerTimeout = time.Duration(k.HeaderTimeout) * time.Second
-		if s.headerTimeout <= 0 {
-			s.headerTimeout = 10 * time.Second
-		}
-		if k.MaxSessions > 0 {
-			s.sessSem = make(chan struct{}, k.MaxSessions)
-		}
-		if k.MaxStreamsTotal > 0 {
-			s.streamSem = make(chan struct{}, k.MaxStreamsTotal)
-		}
-		if k.MaxStreamsPerSession > 0 {
-			s.maxStreamsPerSession = k.MaxStreamsPerSession
-		}
 	}
 
 	return s, nil
@@ -56,78 +34,31 @@ func (s *Server) Start() error {
 	defer cancel()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sig)
 	go func() {
 		<-sig
 		flog.Infof("Shutdown signal received, initiating graceful shutdown...")
 		cancel()
 	}()
 
-	basePort := s.cfg.Network.Port
-	if basePort == 0 {
-		return fmt.Errorf("server network port cannot be 0 (set network.ipv4.addr/network.ipv6.addr port)")
+	pConn, err := socket.New(ctx, &s.cfg.Network)
+	if err != nil {
+		return fmt.Errorf("could not create raw packet conn: %w", err)
 	}
-	connCount := s.cfg.Transport.Conn
-	if connCount < 1 {
-		connCount = 1
+	s.pConn = pConn
+
+	listener, err := kcp.Listen(s.cfg.Transport.KCP, pConn)
+	if err != nil {
+		return fmt.Errorf("could not start KCP listener: %w", err)
 	}
-	lastPort := basePort + connCount - 1
-	if lastPort > 65535 {
-		return fmt.Errorf("server port range too large: base=%d conn=%d => last=%d (max 65535)", basePort, connCount, lastPort)
-	}
+	defer listener.Close()
+	flog.Infof("Server started - listening for packets on :%d", s.cfg.Listen.Addr.Port)
 
-	var listeners []tnet.Listener
-	for i := 0; i < connCount; i++ {
-		netCfg := s.cfg.Network
-		netCfg.Port = basePort + i
+	s.wg.Go(func() {
+		s.listen(ctx, listener)
+	})
 
-		pConn, err := socket.New(ctx, &netCfg)
-		if err != nil {
-			return fmt.Errorf("could not create raw packet conn (port=%d): %w", netCfg.Port, err)
-		}
-
-		l, err := kcp.Listen(s.cfg.Transport.KCP, pConn)
-		if err != nil {
-			pConn.Close()
-			return fmt.Errorf("could not start KCP listener (port=%d): %w", netCfg.Port, err)
-		}
-		listeners = append(listeners, l)
-
-		listener := l
-		s.wg.Go(func() {
-			s.listen(ctx, listener)
-		})
-	}
-	defer func() {
-		for _, l := range listeners {
-			_ = l.Close()
-		}
-	}()
-
-	if connCount > 1 {
-		flog.Infof("Server started - listening for packets on :%d-%d (%d conns)", basePort, lastPort, connCount)
-	} else {
-		flog.Infof("Server started - listening for packets on :%d", basePort)
-	}
-
-	// Block until shutdown signal (context cancellation).
-	<-ctx.Done()
-	flog.Infof("Shutdown signal received, waiting for listeners to stop...")
-
-	// Now give goroutines a deadline to finish.
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
-	shutdownTimer := time.NewTimer(10 * time.Second)
-	defer shutdownTimer.Stop()
-	select {
-	case <-done:
-		flog.Infof("Server shutdown completed")
-	case <-shutdownTimer.C:
-		flog.Warnf("Server shutdown timed out after 10s, forcing exit")
-	}
+	s.wg.Wait()
+	flog.Infof("Server shutdown completed")
 	return nil
 }
 
@@ -136,43 +67,20 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 		<-ctx.Done()
 		listener.Close()
 	}()
-	acceptBackoff := 5 * time.Millisecond
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		conn, err := listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			flog.Warnf("failed to accept connection: %v", err)
-			time.Sleep(acceptBackoff)
-			if acceptBackoff < 1*time.Second {
-				acceptBackoff *= 2
-				if acceptBackoff > 1*time.Second {
-					acceptBackoff = 1 * time.Second
-				}
-			}
+			flog.Errorf("failed to accept connection: %v", err)
 			continue
 		}
-		acceptBackoff = 5 * time.Millisecond
-		if s.sessSem != nil {
-			select {
-			case s.sessSem <- struct{}{}:
-			default:
-				flog.Warnf("dropping new connection from %v: max_sessions reached", conn.RemoteAddr())
-				conn.Close()
-				continue
-			}
-		}
-		diag.IncSessions()
-		flog.Infof("accepted new connection from %v (local: %v)", conn.RemoteAddr(), conn.LocalAddr())
+		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), conn.LocalAddr())
 
 		s.wg.Go(func() {
-			defer func() {
-				diag.DecSessions()
-				if s.sessSem != nil {
-					<-s.sessSem
-				}
-			}()
 			defer conn.Close()
 			s.handleConn(ctx, conn)
 		})

@@ -6,45 +6,16 @@ import (
 )
 
 type PCAP struct {
-	Sockbuf   int   `yaml:"sockbuf"`
-	Snaplen   int   `yaml:"snaplen"`
-	Promisc   bool  `yaml:"promisc"`
-	Immediate *bool `yaml:"immediate"`
-	TimeoutMs int   `yaml:"timeout_ms"`
+	Sockbuf int `yaml:"sockbuf"`
 }
 
 func (p *PCAP) setDefaults(role string) {
 	if p.Sockbuf == 0 {
 		if role == "server" {
-			// Servers handle many concurrent streams; larger kernel buffer absorbs
-			// bursts from 100+ users without dropping packets.
 			p.Sockbuf = 64 * 1024 * 1024
 		} else {
-			p.Sockbuf = 16 * 1024 * 1024
+			p.Sockbuf = 4 * 1024 * 1024
 		}
-	}
-	if p.Snaplen == 0 {
-		// Bounds per-packet capture size. Keep this large enough to safely capture
-		// GRO/LRO-coalesced TCP payloads on some kernels/NICs; otherwise libpcap may
-		// truncate frames and corrupt higher-layer packets.
-		p.Snaplen = 65535
-	}
-	// Default to non-promiscuous capture (lower overhead). This tunnel only needs
-	// traffic destined for this host anyway (BPF filters further narrow it down).
-	//
-	// If you run in an unusual L2 environment and packets aren't captured, set:
-	//   network.pcap.promisc: true
-	//
-	// Promisc default is false, so only set it if you know you need it.
-
-	// Prefer micro-batching by default to reduce userspace wakeups under load.
-	if p.Immediate == nil {
-		v := false
-		p.Immediate = &v
-	}
-	// Timeout controls buffering when immediate=false.
-	if p.TimeoutMs == 0 {
-		p.TimeoutMs = 5
 	}
 }
 
@@ -57,15 +28,6 @@ func (p *PCAP) validate() []error {
 
 	if p.Sockbuf > 256*1024*1024 {
 		errors = append(errors, fmt.Errorf("PCAP sockbuf too large (max 256MB)"))
-	}
-	if p.Snaplen < 256 {
-		errors = append(errors, fmt.Errorf("PCAP snaplen must be >= 256 bytes"))
-	}
-	if p.Snaplen > 65536 {
-		errors = append(errors, fmt.Errorf("PCAP snaplen too large (max 65536)"))
-	}
-	if p.TimeoutMs < 0 || p.TimeoutMs > 60_000 {
-		errors = append(errors, fmt.Errorf("PCAP timeout_ms must be between 0-60000"))
 	}
 
 	// Should be power of 2 for optimal performance, but not required

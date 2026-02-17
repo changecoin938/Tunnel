@@ -2,15 +2,11 @@ package forward
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net"
-	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 	"paqet/internal/tnet"
-	"strings"
-	"syscall"
 	"time"
 )
 
@@ -60,9 +56,10 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn) error 
 		return nil
 	}
 
-	strm, new, k, err := f.client.UDP(ctx, caddr.String(), f.targetAddr)
+	strm, new, k, err := f.client.UDP(caddr.String(), f.targetAddr)
 	if err != nil {
 		flog.Errorf("failed to establish UDP stream for %s -> %s: %v", caddr, f.targetAddr, err)
+		f.client.CloseUDP(k)
 		return err
 	}
 
@@ -71,7 +68,6 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn) error 
 		f.client.CloseUDP(k)
 		return err
 	}
-	diag.AddUDPUp(int64(n))
 	if new {
 		flog.Infof("accepted UDP connection %d for %s -> %s", strm.SID(), caddr, f.targetAddr)
 		go f.handleUDPStrm(ctx, k, strm, conn, caddr)
@@ -112,17 +108,5 @@ func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) e
 	}
 
 	_, err = src.WriteToUDP(buf[:n], addr)
-	if err == nil {
-		diag.AddUDPDown(int64(n))
-		return nil
-	}
-	// ENOBUFS/ENOMEM = packet loss, acceptable for UDP. Never sleep — with 500
-	// users, sleeping cascades and blocks all streams sharing this goroutine.
-	if errors.Is(err, syscall.ENOBUFS) ||
-		errors.Is(err, syscall.ENOMEM) ||
-		strings.Contains(err.Error(), "No buffer space available") ||
-		strings.Contains(err.Error(), "Cannot allocate memory") {
-		return nil
-	}
 	return err
 }

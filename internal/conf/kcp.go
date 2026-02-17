@@ -1,7 +1,5 @@
 package conf
 
-// KCP holds configuration for the KCP transport and smux multiplexing.
-
 import (
 	"fmt"
 	"slices"
@@ -27,43 +25,21 @@ type KCP struct {
 	Block_ string `yaml:"block"`
 	Key    string `yaml:"key"`
 
-	// Guard is a lightweight packet-level filter applied BEFORE KCP decrypt.
-	// It prepends a short header and rejects packets that don't match.
-	// This is useful to cheaply drop random junk / DoS traffic hitting the port.
-	//
-	// Note: Both client and server MUST have identical settings.
-	Guard       *bool  `yaml:"guard"`
-	GuardMagic  string `yaml:"guard_magic"`  // 4 bytes (e.g. "PQT1")
-	GuardWindow int    `yaml:"guard_window"` // seconds (cookie rotation window)
-	GuardSkew   int    `yaml:"guard_skew"`   // accepted previous windows
-
-	// Defensive server-side limits. Use -1 for unlimited.
-	MaxSessions          int `yaml:"max_sessions"`
-	MaxStreamsTotal      int `yaml:"max_streams_total"`
-	MaxStreamsPerSession int `yaml:"max_streams_per_session"`
-
-	// HeaderTimeout is the deadline (in seconds) for reading the initial per-stream
-	// protocol header (gob). This limits resource pinning by stalled clients.
-	HeaderTimeout int `yaml:"header_timeout"`
-
 	Smuxbuf   int `yaml:"smuxbuf"`
 	Streambuf int `yaml:"streambuf"`
 
 	Block kcp.BlockCrypt `yaml:"-"`
 }
 
-func (k *KCP) setDefaults(role string, _ int) {
+func (k *KCP) setDefaults(role string) {
 	if k.Mode == "" {
-		k.Mode = "fast2"
+		k.Mode = "fast"
 	}
 	if k.MTU == 0 {
 		k.MTU = 1350
 	}
 
 	if k.Rcvwnd == 0 {
-		// 512 packets × 1350 MTU = 675KB per session.
-		// 500 sessions × 675KB × 2 (send+recv) = 660MB — fits in 4GB server.
-		// Higher values (e.g. 4096) cause OOM at 500 users (5.4GB for windows alone).
 		k.Rcvwnd = 512
 	}
 	if k.Sndwnd == 0 {
@@ -78,59 +54,14 @@ func (k *KCP) setDefaults(role string, _ int) {
 	// }
 
 	if k.Block_ == "" {
-		k.Block_ = "aes-128-gcm"
-	}
-
-	// Default hardening: enable guard unless explicitly disabled.
-	if k.Guard == nil {
-		v := true
-		k.Guard = &v
-	}
-	if k.GuardMagic == "" {
-		k.GuardMagic = "PQT1"
-	}
-	if k.GuardWindow == 0 {
-		k.GuardWindow = 30
-	}
-	if k.GuardSkew == 0 {
-		k.GuardSkew = 1
-	}
-
-	if k.HeaderTimeout == 0 {
-		k.HeaderTimeout = 10
-	}
-
-	// Match UI/examples defaults for server-side limits.
-	if role == "server" {
-		if k.MaxSessions == 0 {
-			k.MaxSessions = 512
-		}
+		k.Block_ = "aes"
 	}
 
 	if k.Smuxbuf == 0 {
-		// 1MB per session × 500 sessions = 500MB. Enough for 256 streams per
-		// session (4KB each), and won't OOM a 4GB box.
 		k.Smuxbuf = 1 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		// 64KB per stream. 500 users × ~10 streams × 64KB = 320MB max.
-		// Larger values (256KB) cause 4GB+ usage at 500 users with 16K streams.
 		k.Streambuf = 64 * 1024
-	}
-
-	// Match UI/examples defaults for server-side limits.
-	if role == "server" {
-		if k.MaxStreamsTotal == 0 {
-			// 16384 accommodates 500+ concurrent users with multiple streams each
-			// without hitting the global cap and silently dropping new streams.
-			k.MaxStreamsTotal = 16384
-		}
-		if k.MaxStreamsPerSession == 0 {
-			k.MaxStreamsPerSession = 256
-		}
-		if k.MaxStreamsPerSession > k.MaxStreamsTotal && k.MaxStreamsTotal > 0 {
-			k.MaxStreamsPerSession = k.MaxStreamsTotal
-		}
 	}
 }
 
@@ -146,11 +77,11 @@ func (k *KCP) validate() []error {
 		errors = append(errors, fmt.Errorf("KCP MTU must be between 50-1500 bytes"))
 	}
 
-	if k.Rcvwnd < 1 || k.Rcvwnd > 65535 {
-		errors = append(errors, fmt.Errorf("KCP rcvwnd must be between 1-65535"))
+	if k.Rcvwnd < 1 || k.Rcvwnd > 32768 {
+		errors = append(errors, fmt.Errorf("KCP rcvwnd must be between 1-32768"))
 	}
-	if k.Sndwnd < 1 || k.Sndwnd > 65535 {
-		errors = append(errors, fmt.Errorf("KCP sndwnd must be between 1-65535"))
+	if k.Sndwnd < 1 || k.Sndwnd > 32768 {
+		errors = append(errors, fmt.Errorf("KCP sndwnd must be between 1-32768"))
 	}
 
 	validBlocks := []string{"aes", "aes-128", "aes-128-gcm", "aes-192", "salsa20", "blowfish", "twofish", "cast5", "3des", "tea", "xtea", "xor", "sm4", "none", "null"}
@@ -165,37 +96,6 @@ func (k *KCP) validate() []error {
 		errors = append(errors, err)
 	}
 	k.Block = b
-
-	if k.Guard != nil && *k.Guard {
-		if len(k.GuardMagic) != 4 {
-			errors = append(errors, fmt.Errorf("KCP guard_magic must be exactly 4 bytes"))
-		}
-		if k.GuardWindow < 1 || k.GuardWindow > 3600 {
-			errors = append(errors, fmt.Errorf("KCP guard_window must be between 1-3600 seconds"))
-		}
-		if k.GuardSkew < 0 || k.GuardSkew > 10 {
-			errors = append(errors, fmt.Errorf("KCP guard_skew must be between 0-10 windows"))
-		}
-		// We need a secret to compute the guard cookie even if encryption is disabled.
-		if len(k.Key) == 0 {
-			errors = append(errors, fmt.Errorf("KCP guard requires a non-empty key"))
-		}
-	}
-
-	if k.HeaderTimeout < 1 || k.HeaderTimeout > 3600 {
-		errors = append(errors, fmt.Errorf("KCP header_timeout must be between 1-3600 seconds"))
-	}
-
-	// Limits: allow -1 for unlimited, otherwise validate sane bounds.
-	if k.MaxSessions < -1 || k.MaxSessions > 1_000_000 {
-		errors = append(errors, fmt.Errorf("KCP max_sessions must be -1 or between 1-1000000"))
-	}
-	if k.MaxStreamsTotal < -1 || k.MaxStreamsTotal > 10_000_000 {
-		errors = append(errors, fmt.Errorf("KCP max_streams_total must be -1 or between 1-10000000"))
-	}
-	if k.MaxStreamsPerSession < -1 || k.MaxStreamsPerSession > 1_000_000 {
-		errors = append(errors, fmt.Errorf("KCP max_streams_per_session must be -1 or between 1-1000000"))
-	}
 
 	if k.Smuxbuf < 1024 {
 		errors = append(errors, fmt.Errorf("KCP smuxbuf must be >= 1024 bytes"))

@@ -12,65 +12,34 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gopacket/gopacket"
+	"github.com/gopacket/gopacket/layers"
 	"github.com/gopacket/gopacket/pcap"
 )
 
 type TCPF struct {
 	tcpF       iterator.Iterator[conf.TCPF]
-	clientTCPF sync.Map // map[uint64]*iterator.Iterator[conf.TCPF]
-	last       atomic.Value
-}
-
-type tcpfCacheEntry struct {
-	key uint64
-	it  *iterator.Iterator[conf.TCPF]
+	clientTCPF map[uint64]*iterator.Iterator[conf.TCPF]
+	mu         sync.RWMutex
 }
 
 type SendHandle struct {
 	handle      *pcap.Handle
-	srcMAC      net.HardwareAddr
 	srcIPv4     net.IP
 	srcIPv4RHWA net.HardwareAddr
 	srcIPv6     net.IP
 	srcIPv6RHWA net.HardwareAddr
 	srcPort     uint16
-	ipv4TOS     uint8
-	ipv6VtcFlow uint32
+	synOptions  []layers.TCPOption
+	ackOptions  []layers.TCPOption
 	time        uint32
 	tsCounter   uint32
 	tcpF        TCPF
-	framePool   sync.Pool
-	optPool     sync.Pool
-}
-
-type tcpOptBuf struct {
-	// SYN opts (20 bytes):
-	//  MSS(4) + SACKPermitted(2) + TS(10) + NOP(1) + WindowScale(3)
-	//    2,4,0x05,0xb4, 4,2, 8,10, tsVal(4), tsEcr(4), 1, 3,3,8
-	syn [20]byte
-	// ACK opts (12 bytes): NOP(1) + NOP(1) + TS(10)
-	//    1,1, 8,10, tsVal(4), tsEcr(4)
-	ack [12]byte
-}
-
-func newTCPOptBuf() *tcpOptBuf {
-	b := &tcpOptBuf{}
-	b.syn = [20]byte{
-		2, 4, 0x05, 0xB4, // MSS = 1460
-		4, 2, // SACK permitted
-		8, 10, // Timestamps
-		0, 0, 0, 0, // tsval
-		0, 0, 0, 0, // tsecr
-		1,       // NOP
-		3, 3, 8, // Window scale = 8
-	}
-	b.ack = [12]byte{
-		1, 1, // NOP, NOP
-		8, 10, // Timestamps
-		0, 0, 0, 0, // tsval
-		0, 0, 0, 0, // tsecr
-	}
-	return b
+	ethPool     sync.Pool
+	ipv4Pool    sync.Pool
+	ipv6Pool    sync.Pool
+	tcpPool     sync.Pool
+	bufPool     sync.Pool
 }
 
 func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
@@ -86,34 +55,53 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		}
 	}
 
+	synOptions := []layers.TCPOption{
+		{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0xb4}},
+		{OptionType: layers.TCPOptionKindSACKPermitted, OptionLength: 2},
+		{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: make([]byte, 8)},
+		{OptionType: layers.TCPOptionKindNop},
+		{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{8}},
+	}
+
+	ackOptions := []layers.TCPOption{
+		{OptionType: layers.TCPOptionKindNop},
+		{OptionType: layers.TCPOptionKindNop},
+		{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: make([]byte, 8)},
+	}
+
 	sh := &SendHandle{
-		handle:  handle,
-		srcMAC:  cfg.Interface.HardwareAddr,
-		srcPort: uint16(cfg.Port),
-		tcpF:    TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}},
-		time:    uint32(time.Now().UnixNano() / int64(time.Millisecond)),
-		framePool: sync.Pool{
+		handle:     handle,
+		srcPort:    uint16(cfg.Port),
+		synOptions: synOptions,
+		ackOptions: ackOptions,
+		tcpF:       TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
+		time:       uint32(time.Now().UnixNano() / int64(time.Millisecond)),
+		ethPool: sync.Pool{
 			New: func() any {
-				return make([]byte, 0, 2048)
+				return &layers.Ethernet{SrcMAC: cfg.Interface.HardwareAddr}
 			},
 		},
-		optPool: sync.Pool{
+		ipv4Pool: sync.Pool{
 			New: func() any {
-				return newTCPOptBuf()
+				return &layers.IPv4{}
+			},
+		},
+		ipv6Pool: sync.Pool{
+			New: func() any {
+				return &layers.IPv6{}
+			},
+		},
+		tcpPool: sync.Pool{
+			New: func() any {
+				return &layers.TCP{}
+			},
+		},
+		bufPool: sync.Pool{
+			New: func() any {
+				return gopacket.NewSerializeBuffer()
 			},
 		},
 	}
-	// DSCP: some networks/provider edges police EF (46) aggressively. Default to 0 for maximum throughput
-	// unless explicitly configured via `network.dscp`.
-	dscp := cfg.DSCP
-	if dscp < 0 {
-		dscp = 0
-	}
-	if dscp > 63 {
-		dscp = 63
-	}
-	sh.ipv4TOS = uint8(dscp << 2) // DSCP(6) << 2, ECN(2)=0
-	sh.ipv6VtcFlow = 0x60000000 | (uint32(sh.ipv4TOS) << 20)
 	if cfg.IPv4.Addr != nil {
 		sh.srcIPv4 = cfg.IPv4.Addr.IP
 		sh.srcIPv4RHWA = cfg.IPv4.Router
@@ -125,279 +113,121 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	return sh, nil
 }
 
-func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr) error {
-	return h.WriteParts(nil, payload, addr)
+func (h *SendHandle) buildIPv4Header(dstIP net.IP) *layers.IPv4 {
+	ip := h.ipv4Pool.Get().(*layers.IPv4)
+	*ip = layers.IPv4{
+		Version:  4,
+		IHL:      5,
+		TOS:      184,
+		TTL:      64,
+		Flags:    layers.IPv4DontFragment,
+		Protocol: layers.IPProtocolTCP,
+		SrcIP:    h.srcIPv4,
+		DstIP:    dstIP,
+	}
+	return ip
 }
 
-// WriteParts writes prefix+payload as a single TCP segment payload, without allocating
-// a combined buffer. This is used by the KCP guard fast-path.
-func (h *SendHandle) WriteParts(prefix []byte, payload []byte, addr *net.UDPAddr) error {
-	if addr == nil {
-		return fmt.Errorf("invalid destination address")
+func (h *SendHandle) buildIPv6Header(dstIP net.IP) *layers.IPv6 {
+	ip := h.ipv6Pool.Get().(*layers.IPv6)
+	*ip = layers.IPv6{
+		Version:      6,
+		TrafficClass: 184,
+		HopLimit:     64,
+		NextHeader:   layers.IPProtocolTCP,
+		SrcIP:        h.srcIPv6,
+		DstIP:        dstIP,
+	}
+	return ip
+}
+
+func (h *SendHandle) buildTCPHeader(dstPort uint16, f conf.TCPF) *layers.TCP {
+	tcp := h.tcpPool.Get().(*layers.TCP)
+	*tcp = layers.TCP{
+		SrcPort: layers.TCPPort(h.srcPort),
+		DstPort: layers.TCPPort(dstPort),
+		FIN:     f.FIN, SYN: f.SYN, RST: f.RST, PSH: f.PSH, ACK: f.ACK, URG: f.URG, ECE: f.ECE, CWR: f.CWR, NS: f.NS,
+		Window: 65535,
 	}
 
-	opt := h.optPool.Get().(*tcpOptBuf)
-	frame := h.framePool.Get().([]byte)
+	counter := atomic.AddUint32(&h.tsCounter, 1)
+	tsVal := h.time + (counter >> 3)
+	if f.SYN {
+		binary.BigEndian.PutUint32(h.synOptions[2].OptionData[0:4], tsVal)
+		binary.BigEndian.PutUint32(h.synOptions[2].OptionData[4:8], 0)
+		tcp.Options = h.synOptions
+		tcp.Seq = 1 + (counter & 0x7)
+		tcp.Ack = 0
+		if f.ACK {
+			tcp.Ack = tcp.Seq + 1
+		}
+	} else {
+		tsEcr := tsVal - (counter%200 + 50)
+		binary.BigEndian.PutUint32(h.ackOptions[2].OptionData[0:4], tsVal)
+		binary.BigEndian.PutUint32(h.ackOptions[2].OptionData[4:8], tsEcr)
+		tcp.Options = h.ackOptions
+		seq := h.time + (counter << 7)
+		tcp.Seq = seq
+		tcp.Ack = seq - (counter & 0x3FF) + 1400
+	}
+
+	return tcp
+}
+
+func (h *SendHandle) Write(payload []byte, addr *net.UDPAddr) error {
+	buf := h.bufPool.Get().(gopacket.SerializeBuffer)
+	ethLayer := h.ethPool.Get().(*layers.Ethernet)
 	defer func() {
-		h.optPool.Put(opt)
-		frame = frame[:0]
-		h.framePool.Put(frame)
+		buf.Clear()
+		h.bufPool.Put(buf)
+		h.ethPool.Put(ethLayer)
 	}()
 
 	dstIP := addr.IP
 	dstPort := uint16(addr.Port)
 
 	f := h.getClientTCPF(dstIP, dstPort)
+	tcpLayer := h.buildTCPHeader(dstPort, f)
+	defer h.tcpPool.Put(tcpLayer)
 
-	// Timestamp + seq/ack generation (keep behavior identical to previous gopacket path).
-	counter := atomic.AddUint32(&h.tsCounter, 1)
-	tsVal := h.time + (counter >> 3)
-
-	var seq, ack uint32
-	var opts []byte
-	if f.SYN {
-		binary.BigEndian.PutUint32(opt.syn[8:12], tsVal)
-		binary.BigEndian.PutUint32(opt.syn[12:16], 0)
-		opts = opt.syn[:]
-		seq = 1 + (counter & 0x7)
-		ack = 0
-		if f.ACK {
-			ack = seq + 1
-		}
+	var ipLayer gopacket.SerializableLayer
+	if dstIP.To4() != nil {
+		ip := h.buildIPv4Header(dstIP)
+		defer h.ipv4Pool.Put(ip)
+		ipLayer = ip
+		tcpLayer.SetNetworkLayerForChecksum(ip)
+		ethLayer.DstMAC = h.srcIPv4RHWA
+		ethLayer.EthernetType = layers.EthernetTypeIPv4
 	} else {
-		tsEcr := tsVal - (counter%200 + 50)
-		binary.BigEndian.PutUint32(opt.ack[4:8], tsVal)
-		binary.BigEndian.PutUint32(opt.ack[8:12], tsEcr)
-		opts = opt.ack[:]
-		seq = h.time + (counter << 7)
-		ack = seq - (counter & 0x3FF) + 1400
+		ip := h.buildIPv6Header(dstIP)
+		defer h.ipv6Pool.Put(ip)
+		ipLayer = ip
+		tcpLayer.SetNetworkLayerForChecksum(ip)
+		ethLayer.DstMAC = h.srcIPv6RHWA
+		ethLayer.EthernetType = layers.EthernetTypeIPv6
 	}
 
-	tcpHdrLen := 20 + len(opts)
-	payloadLen := len(prefix) + len(payload)
-	tcpLen := tcpHdrLen + payloadLen
-
-	if dst4 := dstIP.To4(); dst4 != nil {
-		src4 := h.srcIPv4.To4()
-		if src4 == nil || len(h.srcIPv4RHWA) != 6 || len(h.srcMAC) != 6 {
-			return fmt.Errorf("IPv4 send not configured correctly")
-		}
-		need := 14 + 20 + tcpLen
-		if cap(frame) < need {
-			frame = make([]byte, need)
-		} else {
-			frame = frame[:need]
-		}
-
-		// Ethernet
-		copy(frame[0:6], h.srcIPv4RHWA)
-		copy(frame[6:12], h.srcMAC)
-		frame[12], frame[13] = 0x08, 0x00 // IPv4
-
-		// IPv4 header
-		ip := frame[14 : 14+20]
-		writeIPv4Header(ip, h.ipv4TOS, src4, dst4, uint16(20+tcpLen))
-
-		// TCP header + opts + payload
-		tcpOff := 14 + 20
-		seg := frame[tcpOff:]
-		tcp := seg[:tcpHdrLen]
-		writeTCPHeader(tcp[:20], h.srcPort, dstPort, seq, ack, f, uint8(tcpHdrLen/4))
-		copy(tcp[20:], opts)
-		poff := tcpHdrLen
-		if len(prefix) > 0 {
-			copy(seg[poff:], prefix)
-			poff += len(prefix)
-		}
-		copy(seg[poff:], payload)
-
-		// TCP checksum (includes payload)
-		binary.BigEndian.PutUint16(tcp[16:18], 0)
-		binary.BigEndian.PutUint16(tcp[16:18], tcpChecksumIPv4(src4, dst4, seg))
-
-		return h.handle.WritePacketData(frame)
+	opts := gopacket.SerializeOptions{FixLengths: true, ComputeChecksums: true}
+	if err := gopacket.SerializeLayers(buf, opts, ethLayer, ipLayer, tcpLayer, gopacket.Payload(payload)); err != nil {
+		return err
 	}
-
-	if dst16 := dstIP.To16(); dst16 != nil {
-		src16 := h.srcIPv6.To16()
-		if src16 == nil || len(h.srcIPv6RHWA) != 6 || len(h.srcMAC) != 6 {
-			return fmt.Errorf("IPv6 send not configured correctly")
-		}
-		if tcpLen > 0xFFFF {
-			return fmt.Errorf("IPv6 payload too large: %d", tcpLen)
-		}
-		need := 14 + 40 + tcpLen
-		if cap(frame) < need {
-			frame = make([]byte, need)
-		} else {
-			frame = frame[:need]
-		}
-
-		// Ethernet
-		copy(frame[0:6], h.srcIPv6RHWA)
-		copy(frame[6:12], h.srcMAC)
-		frame[12], frame[13] = 0x86, 0xDD // IPv6
-
-		// IPv6 header
-		ip := frame[14 : 14+40]
-		writeIPv6Header(ip, h.ipv6VtcFlow, src16, dst16, uint16(tcpLen))
-
-		// TCP header + opts + payload
-		tcpOff := 14 + 40
-		seg := frame[tcpOff:]
-		tcp := seg[:tcpHdrLen]
-		writeTCPHeader(tcp[:20], h.srcPort, dstPort, seq, ack, f, uint8(tcpHdrLen/4))
-		copy(tcp[20:], opts)
-		poff := tcpHdrLen
-		if len(prefix) > 0 {
-			copy(seg[poff:], prefix)
-			poff += len(prefix)
-		}
-		copy(seg[poff:], payload)
-
-		binary.BigEndian.PutUint16(tcp[16:18], 0)
-		binary.BigEndian.PutUint16(tcp[16:18], tcpChecksumIPv6(src16, dst16, seg))
-
-		return h.handle.WritePacketData(frame)
-	}
-
-	return fmt.Errorf("invalid destination IP: %v", dstIP)
-}
-
-func writeIPv4Header(hdr []byte, tos uint8, src4, dst4 []byte, totalLen uint16) {
-	// 20 bytes, no options.
-	hdr[0] = 0x45 // Version=4, IHL=5
-	hdr[1] = tos  // TOS (DSCP<<2 | ECN)
-	hdr[2] = byte(totalLen >> 8)
-	hdr[3] = byte(totalLen)
-	hdr[4], hdr[5] = 0, 0 // ID
-	hdr[6], hdr[7] = 0x40, 0x00
-	hdr[8] = 64 // TTL
-	hdr[9] = 6  // TCP
-	hdr[10], hdr[11] = 0, 0
-	copy(hdr[12:16], src4)
-	copy(hdr[16:20], dst4)
-	binary.BigEndian.PutUint16(hdr[10:12], csumFinalize(csum16(hdr)))
-}
-
-func writeIPv6Header(hdr []byte, vtcFlow uint32, src16, dst16 []byte, payloadLen uint16) {
-	// 40 bytes header.
-	// Version=6, TrafficClass=(DSCP<<2 | ECN), FlowLabel=0.
-	binary.BigEndian.PutUint32(hdr[0:4], vtcFlow)
-	binary.BigEndian.PutUint16(hdr[4:6], payloadLen)
-	hdr[6] = 6  // NextHeader=TCP
-	hdr[7] = 64 // HopLimit
-	copy(hdr[8:24], src16)
-	copy(hdr[24:40], dst16)
-}
-
-func writeTCPHeader(hdr []byte, srcPort, dstPort uint16, seq, ack uint32, f conf.TCPF, dataOffWords uint8) {
-	binary.BigEndian.PutUint16(hdr[0:2], srcPort)
-	binary.BigEndian.PutUint16(hdr[2:4], dstPort)
-	binary.BigEndian.PutUint32(hdr[4:8], seq)
-	binary.BigEndian.PutUint32(hdr[8:12], ack)
-
-	var offFlags uint16 = uint16(dataOffWords) << 12
-	if f.NS {
-		offFlags |= 0x0100
-	}
-	if f.CWR {
-		offFlags |= 0x0080
-	}
-	if f.ECE {
-		offFlags |= 0x0040
-	}
-	if f.URG {
-		offFlags |= 0x0020
-	}
-	if f.ACK {
-		offFlags |= 0x0010
-	}
-	if f.PSH {
-		offFlags |= 0x0008
-	}
-	if f.RST {
-		offFlags |= 0x0004
-	}
-	if f.SYN {
-		offFlags |= 0x0002
-	}
-	if f.FIN {
-		offFlags |= 0x0001
-	}
-
-	binary.BigEndian.PutUint16(hdr[12:14], offFlags)
-	binary.BigEndian.PutUint16(hdr[14:16], 65535) // window
-	hdr[16], hdr[17] = 0, 0                       // checksum (filled later)
-	hdr[18], hdr[19] = 0, 0                       // urgent pointer
-}
-
-func tcpChecksumIPv4(src4, dst4 []byte, tcpSeg []byte) uint16 {
-	sum := csum16(src4)
-	sum += csum16(dst4)
-	sum += uint32(6) // protocol
-	sum += uint32(len(tcpSeg))
-	sum += csum16(tcpSeg)
-	return csumFinalize(sum)
-}
-
-func tcpChecksumIPv6(src16, dst16 []byte, tcpSeg []byte) uint16 {
-	sum := csum16(src16)
-	sum += csum16(dst16)
-	var l4 [4]byte
-	binary.BigEndian.PutUint32(l4[:], uint32(len(tcpSeg)))
-	sum += csum16(l4[:])
-	sum += uint32(6) // next header
-	sum += csum16(tcpSeg)
-	return csumFinalize(sum)
+	return h.handle.WritePacketData(buf.Bytes())
 }
 
 func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
-	key := hash.IPAddr(dstIP, dstPort)
-	if v := h.tcpF.last.Load(); v != nil {
-		if ent, ok := v.(tcpfCacheEntry); ok && ent.key == key && ent.it != nil {
-			if f, ok := ent.it.Next(); ok {
-				return f
-			}
-		}
+	h.tcpF.mu.RLock()
+	defer h.tcpF.mu.RUnlock()
+	if ff := h.tcpF.clientTCPF[hash.IPAddr(dstIP, dstPort)]; ff != nil {
+		return ff.Next()
 	}
-
-	if v, ok := h.tcpF.clientTCPF.Load(key); ok {
-		if ff, ok := v.(*iterator.Iterator[conf.TCPF]); ok && ff != nil {
-			h.tcpF.last.Store(tcpfCacheEntry{key: key, it: ff})
-			if f, ok := ff.Next(); ok {
-				return f
-			}
-		}
-	}
-	if f, ok := h.tcpF.tcpF.Next(); ok {
-		return f
-	}
-	// Should be unreachable: config validation requires at least one TCP flag combo.
-	return conf.TCPF{PSH: true, ACK: true}
+	return h.tcpF.tcpF.Next()
 }
 
 func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
-	ua, ok := addr.(*net.UDPAddr)
-	if !ok || ua == nil {
-		return
-	}
-	a := *ua
-	key := hash.IPAddr(a.IP, uint16(a.Port))
-	it := &iterator.Iterator[conf.TCPF]{Items: f}
-	h.tcpF.clientTCPF.Store(key, it)
-	h.tcpF.last.Store(tcpfCacheEntry{key: key, it: it})
-}
-
-func (h *SendHandle) clearClientTCPF(addr net.Addr) {
-	ua, ok := addr.(*net.UDPAddr)
-	if !ok || ua == nil {
-		return
-	}
-	a := *ua
-	key := hash.IPAddr(a.IP, uint16(a.Port))
-	h.tcpF.clientTCPF.Delete(key)
-	h.tcpF.last.Store(tcpfCacheEntry{})
+	a := *addr.(*net.UDPAddr)
+	h.tcpF.mu.Lock()
+	h.tcpF.clientTCPF[hash.IPAddr(a.IP, uint16(a.Port))] = &iterator.Iterator[conf.TCPF]{Items: f}
+	h.tcpF.mu.Unlock()
 }
 
 func (h *SendHandle) Close() {

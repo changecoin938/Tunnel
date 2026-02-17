@@ -1,21 +1,17 @@
 package socks
 
 import (
-	"errors"
-	"fmt"
 	"io"
 	"net"
-	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
-	"syscall"
 	"time"
 
 	"github.com/txthinking/socks5"
 )
 
 func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
-	strm, new, k, err := h.client.UDP(h.ctx, addr.String(), d.Address())
+	strm, new, k, err := h.client.UDP(addr.String(), d.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)
 		return err
@@ -28,30 +24,22 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 		h.client.CloseUDP(k)
 		return err
 	}
-	diag.AddUDPUp(int64(len(d.Data)))
 
 	if new {
-		// Copy mutable request fields before starting a goroutine. Some SOCKS5
-		// implementations reuse Datagram/UDPAddr storage between packets.
-		atyp := d.Atyp
+		srcAddr := &net.UDPAddr{IP: append(net.IP(nil), addr.IP...), Port: addr.Port, Zone: addr.Zone}
+		dstAtyp := d.Atyp
 		dstAddr := append([]byte(nil), d.DstAddr...)
 		dstPort := append([]byte(nil), d.DstPort...)
-		peer := &net.UDPAddr{
-			IP:   append(net.IP(nil), addr.IP...),
-			Port: addr.Port,
-			Zone: addr.Zone,
-		}
-		clientAddr := peer.String()
-		targetAddr := d.Address()
+		dstText := d.Address()
 
-		flog.Infof("SOCKS5 accepted UDP connection %s -> %s", addr, d.Address())
+		flog.Infof("SOCKS5 accepted UDP connection %s -> %s", srcAddr, dstText)
 		go func() {
 			bufp := buffer.UPool.Get().(*[]byte)
 			defer buffer.UPool.Put(bufp)
 			buf := *bufp
 
 			defer func() {
-				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), clientAddr, targetAddr)
+				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), srcAddr, dstText)
 				h.client.CloseUDP(k)
 			}()
 			for {
@@ -63,24 +51,15 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 					n, err := strm.Read(buf)
 					strm.SetDeadline(time.Time{})
 					if err != nil {
-						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), clientAddr, targetAddr, err)
+						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), srcAddr, dstText, err)
 						return
 					}
-					dd := socks5.NewDatagram(atyp, dstAddr, dstPort, buf[:n])
-					ddBytes := dd.Bytes()
-					_, err = server.UDPConn.WriteToUDP(ddBytes, peer)
+					dd := socks5.NewDatagram(dstAtyp, dstAddr, dstPort, buf[:n])
+					_, err = server.UDPConn.WriteToUDP(dd.Bytes(), srcAddr)
 					if err != nil {
-						// ENOBUFS/ENOMEM = packet loss, acceptable for UDP.
-						// Never sleep — with 500 users, sleeping blocks this
-						// goroutine and stalls the entire relay.
-						if errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
-							// Drop and continue; next packet may succeed.
-						} else {
-							flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", len(ddBytes), clientAddr, err)
-							return
-						}
+						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", len(dd.Bytes()), srcAddr, err)
+						return
 					}
-					diag.AddUDPDown(int64(n))
 				}
 			}
 		}()
@@ -89,23 +68,11 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 }
 
 func (h *Handler) handleUDPAssociate(conn *net.TCPConn) error {
-	la := conn.LocalAddr()
-	addr, ok := la.(*net.TCPAddr)
-	if !ok || addr == nil {
-		return fmt.Errorf("unexpected local address type: %T", la)
-	}
+	addr := conn.LocalAddr().(*net.TCPAddr)
 
 	bufp := rPool.Get().(*[]byte)
-	buf := (*bufp)[:0]
-	defer func() {
-		if cap(buf) > socksReplyBufCap {
-			b := make([]byte, 0, socksReplyBufCap)
-			*bufp = b
-		} else {
-			*bufp = buf[:0]
-		}
-		rPool.Put(bufp)
-	}()
+	defer rPool.Put(bufp)
+	buf := *bufp
 	buf = append(buf, socks5.Ver)
 	buf = append(buf, socks5.RepSuccess)
 	buf = append(buf, 0x00) // reserved

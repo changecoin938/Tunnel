@@ -17,11 +17,7 @@ type Listener struct {
 }
 
 func Listen(cfg *conf.KCP, pConn *socket.PacketConn) (tnet.Listener, error) {
-	pc := net.PacketConn(pConn)
-	if cfg.Guard != nil && *cfg.Guard {
-		pc = socket.NewGuardConn(pc, cfg)
-	}
-	l, err := kcp.ServeConn(cfg.Block, cfg.Dshard, cfg.Pshard, pc)
+	l, err := kcp.ServeConn(cfg.Block, cfg.Dshard, cfg.Pshard, pConn)
 	if err != nil {
 		return nil, err
 	}
@@ -37,10 +33,10 @@ func (l *Listener) Accept() (tnet.Conn, error) {
 	aplConf(conn, l.cfg)
 	sess, err := smux.Server(conn, smuxConf(l.cfg))
 	if err != nil {
-		_ = conn.Close()
+		conn.Close()
 		return nil, err
 	}
-	return &Conn{PacketConn: l.packetConn, OwnPacketConn: false, UDPSession: conn, Session: sess}, nil
+	return &Conn{nil, conn, sess}, nil
 }
 
 func (l *Listener) Close() error {

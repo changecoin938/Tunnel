@@ -1,7 +1,6 @@
 package kcp
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"paqet/internal/protocol"
@@ -14,10 +13,9 @@ import (
 )
 
 type Conn struct {
-	PacketConn    *socket.PacketConn
-	OwnPacketConn bool
-	UDPSession    *kcp.UDPSession
-	Session       *smux.Session
+	PacketConn *socket.PacketConn
+	UDPSession *kcp.UDPSession
+	Session    *smux.Session
 }
 
 func (c *Conn) OpenStrm() (tnet.Strm, error) {
@@ -43,45 +41,34 @@ func (c *Conn) Ping(wait bool) error {
 	}
 	defer strm.Close()
 	if wait {
-		_ = strm.SetDeadline(time.Now().Add(5 * time.Second))
-		defer strm.SetDeadline(time.Time{})
 		p := protocol.Proto{Type: protocol.PPING}
 		err = p.Write(strm)
 		if err != nil {
-			return fmt.Errorf("connection test failed: %v", err)
+			return fmt.Errorf("strm ping write failed: %v", err)
 		}
 		err = p.Read(strm)
 		if err != nil {
-			return fmt.Errorf("connection test failed: %v", err)
+			return fmt.Errorf("strm ping read failed: %v", err)
 		}
 		if p.Type != protocol.PPONG {
-			return fmt.Errorf("connection test failed: unexpected response type %d", p.Type)
+			return fmt.Errorf("strm pong failed: %v", err)
 		}
 	}
 	return nil
 }
 
 func (c *Conn) Close() error {
-	var errs []error
-	// Close smux Session BEFORE KCP UDPSession so that FIN frames for open
-	// streams can still be delivered over the live transport. Reversing this
-	// order causes smux's sendLoop to hit a dead transport while flushing.
-	if c.Session != nil {
-		if err := c.Session.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
+	var err error
 	if c.UDPSession != nil {
-		if err := c.UDPSession.Close(); err != nil {
-			errs = append(errs, err)
-		}
+		c.UDPSession.Close()
 	}
-	if c.PacketConn != nil && c.OwnPacketConn {
-		if err := c.PacketConn.Close(); err != nil {
-			errs = append(errs, err)
-		}
+	if c.Session != nil {
+		c.Session.Close()
 	}
-	return errors.Join(errs...)
+	if c.PacketConn != nil {
+		c.PacketConn.Close()
+	}
+	return err
 }
 
 func (c *Conn) LocalAddr() net.Addr                { return c.Session.LocalAddr() }

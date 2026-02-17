@@ -13,23 +13,19 @@ import (
 )
 
 func Dial(addr *net.UDPAddr, cfg *conf.KCP, pConn *socket.PacketConn) (tnet.Conn, error) {
-	pc := net.PacketConn(pConn)
-	if cfg.Guard != nil && *cfg.Guard {
-		pc = socket.NewGuardConn(pc, cfg)
-	}
-	conn, err := kcp.NewConn(addr.String(), cfg.Block, cfg.Dshard, cfg.Pshard, pc)
+	conn, err := kcp.NewConn(addr.String(), cfg.Block, cfg.Dshard, cfg.Pshard, pConn)
 	if err != nil {
 		return nil, fmt.Errorf("connection attempt failed: %v", err)
 	}
 	aplConf(conn, cfg)
-	flog.Debugf("KCP connection established, creating smux session")
+	flog.Debugf("KCP connection created, creating smux session")
 
 	sess, err := smux.Client(conn, smuxConf(cfg))
 	if err != nil {
-		_ = conn.Close() // Close the KCP session to prevent goroutine/resource leak.
+		conn.Close()
 		return nil, fmt.Errorf("failed to create smux session: %w", err)
 	}
 
-	flog.Debugf("smux session established successfully")
-	return &Conn{PacketConn: pConn, OwnPacketConn: true, UDPSession: conn, Session: sess}, nil
+	flog.Debugf("smux session created successfully")
+	return &Conn{pConn, conn, sess}, nil
 }

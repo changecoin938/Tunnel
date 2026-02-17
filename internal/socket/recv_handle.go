@@ -6,8 +6,6 @@ import (
 	"net"
 	"paqet/internal/conf"
 	"runtime"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gopacket/gopacket/pcap"
@@ -15,9 +13,6 @@ import (
 
 type RecvHandle struct {
 	handle *pcap.Handle
-
-	addrCache    sync.Map // map[addrKey]*net.UDPAddr
-	addrCacheLen atomic.Int64
 }
 
 func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
@@ -45,12 +40,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
 	for {
 		data, _, err := h.handle.ZeroCopyReadPacketData()
 		if err != nil {
-			// If a finite timeout is configured on the pcap handle, libpcap returns
-			// NextErrorTimeoutExpired when no packets arrive within the window.
-			// This is NOT fatal; keep waiting.
 			if err == pcap.NextErrorTimeoutExpired {
-				// Brief sleep avoids a tight spin-loop that wastes CPU when no
-				// packets are available. 100µs is short enough to keep latency low.
 				time.Sleep(100 * time.Microsecond)
 				continue
 			}
@@ -62,101 +52,23 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
 			continue
 		}
 
-		addr := h.getAddr(srcIP, srcPort)
+		addr := &net.UDPAddr{
+			IP:   append(net.IP(nil), srcIP...),
+			Port: int(srcPort),
+		}
 		return payload, addr, nil
 	}
 }
 
-func (h *RecvHandle) Close() {
-	if h.handle != nil {
-		h.handle.Close()
-	}
-}
-
-// addrKey is an allocation-free map key for caching *net.UDPAddr objects.
-// It bounds per-packet allocations when packets arrive from the same peer.
-type addrKey struct {
-	ip   [16]byte
-	port uint16
-	v4   bool
-}
-
-func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
-	var k addrKey
-	k.port = srcPort
-	if len(srcIP) == 4 {
-		k.v4 = true
-		copy(k.ip[:4], srcIP)
-	} else {
-		copy(k.ip[:], srcIP)
-	}
-
-	if v, ok := h.addrCache.Load(k); ok {
-		if a, ok := v.(*net.UDPAddr); ok && a != nil {
-			return a
-		}
-	}
-
-	// Create a stable copy (pcap buffers are reused).
-	var ipCopy net.IP
-	if k.v4 {
-		ipCopy = make(net.IP, 4)
-		copy(ipCopy, srcIP[:4])
-	} else {
-		ipCopy = make(net.IP, 16)
-		copy(ipCopy, srcIP[:16])
-	}
-	addr := &net.UDPAddr{IP: ipCopy, Port: int(srcPort)}
-
-	if prev, loaded := h.addrCache.LoadOrStore(k, addr); loaded {
-		if a, ok := prev.(*net.UDPAddr); ok && a != nil {
-			return a
-		}
-	}
-	// Evict incrementally instead of scanning the entire map. Each time we exceed
-	// the high-water mark, delete a batch of entries to amortize the cost. This
-	// avoids the O(n) full-scan that would block all concurrent reads.
-	if newLen := h.addrCacheLen.Add(1); newLen > 65536 {
-		// Only one goroutine needs to evict. Use CAS to claim the eviction duty.
-		if h.addrCacheLen.CompareAndSwap(newLen, newLen-4096) {
-			evicted := 0
-			h.addrCache.Range(func(key, _ any) bool {
-				h.addrCache.Delete(key)
-				evicted++
-				return evicted < 4096
-			})
-		}
-	}
-	return addr
-}
-
-// parseEtherIPTCP parses an Ethernet frame carrying IPv4/IPv6+TCP and returns:
-// - srcIP: 4 or 16 bytes (a view into the provided frame)
-// - srcPort: TCP source port
-// - payload: TCP payload (a view into the provided frame)
-//
-// It supports 802.1Q VLAN tags. For uncommon IPv6 extension chains, it may return ok=false.
 func parseEtherIPTCP(frame []byte) (srcIP []byte, srcPort uint16, payload []byte, ok bool) {
-	const (
-		etherHdrLen  = 14
-		ethIPv4      = 0x0800
-		ethIPv6      = 0x86DD
-		ethVLAN      = 0x8100
-		ethQinQ      = 0x88A8
-		ipProtoTCP   = 6
-		ipv4MinHdr   = 20
-		ipv6HdrLen   = 40
-		tcpMinHdrLen = 20
-	)
-
-	if len(frame) < etherHdrLen {
+	if len(frame) < 14 {
 		return nil, 0, nil, false
 	}
-	off := etherHdrLen
+
 	etherType := binary.BigEndian.Uint16(frame[12:14])
-	if etherType == ethVLAN || etherType == ethQinQ {
-		// VLAN tag: TCI(2) + encapsulated ethertype(2)
-		if len(frame) < etherHdrLen+4 {
+	off := 14
+	if etherType == 0x8100 || etherType == 0x88A8 {
+		if len(frame) < 18 {
 			return nil, 0, nil, false
 		}
 		etherType = binary.BigEndian.Uint16(frame[16:18])
@@ -164,95 +76,54 @@ func parseEtherIPTCP(frame []byte) (srcIP []byte, srcPort uint16, payload []byte
 	}
 
 	switch etherType {
-	case ethIPv4:
-		if len(frame) < off+ipv4MinHdr {
+	case 0x0800: // IPv4
+		if len(frame) < off+20 {
 			return nil, 0, nil, false
 		}
 		ihl := int(frame[off]&0x0F) * 4
-		if ihl < ipv4MinHdr || len(frame) < off+ihl {
+		if ihl < 20 || len(frame) < off+ihl {
 			return nil, 0, nil, false
 		}
-		if frame[off+9] != ipProtoTCP {
+		if frame[off+9] != 6 { // TCP
 			return nil, 0, nil, false
 		}
 		src := frame[off+12 : off+16]
 		tcpOff := off + ihl
-		if len(frame) < tcpOff+tcpMinHdrLen {
+		if len(frame) < tcpOff+20 {
 			return nil, 0, nil, false
 		}
 		dataOff := int(frame[tcpOff+12]>>4) * 4
-		if dataOff < tcpMinHdrLen || len(frame) < tcpOff+dataOff {
+		if dataOff < 20 || len(frame) < tcpOff+dataOff {
 			return nil, 0, nil, false
 		}
 		sport := binary.BigEndian.Uint16(frame[tcpOff : tcpOff+2])
 		return src, sport, frame[tcpOff+dataOff:], true
 
-	case ethIPv6:
-		if len(frame) < off+ipv6HdrLen {
+	case 0x86DD: // IPv6 (no ext header walk)
+		if len(frame) < off+40 {
 			return nil, 0, nil, false
 		}
-		next := frame[off+6]
-		src := frame[off+8 : off+24]
-		tcpOff := off + ipv6HdrLen
-
-		// Best-effort skip common extension headers.
-		for {
-			switch next {
-			case ipProtoTCP:
-				if len(frame) < tcpOff+tcpMinHdrLen {
-					return nil, 0, nil, false
-				}
-				dataOff := int(frame[tcpOff+12]>>4) * 4
-				if dataOff < tcpMinHdrLen || len(frame) < tcpOff+dataOff {
-					return nil, 0, nil, false
-				}
-				sport := binary.BigEndian.Uint16(frame[tcpOff : tcpOff+2])
-				return src, sport, frame[tcpOff+dataOff:], true
-
-			// Hop-by-Hop (0), Routing (43), Destination Options (60)
-			case 0, 43, 60:
-				if len(frame) < tcpOff+2 {
-					return nil, 0, nil, false
-				}
-				extNext := frame[tcpOff]
-				extLen := int(frame[tcpOff+1]+1) * 8
-				if len(frame) < tcpOff+extLen {
-					return nil, 0, nil, false
-				}
-				next = extNext
-				tcpOff += extLen
-				continue
-
-			// Fragment (44) is always 8 bytes.
-			case 44:
-				if len(frame) < tcpOff+8 {
-					return nil, 0, nil, false
-				}
-				next = frame[tcpOff]
-				tcpOff += 8
-				continue
-
-			// AH (51): length is in 4-byte units, not counting first 2 units.
-			case 51:
-				if len(frame) < tcpOff+2 {
-					return nil, 0, nil, false
-				}
-				extNext := frame[tcpOff]
-				extLen := (int(frame[tcpOff+1]) + 2) * 4
-				if len(frame) < tcpOff+extLen {
-					return nil, 0, nil, false
-				}
-				next = extNext
-				tcpOff += extLen
-				continue
-
-			default:
-				// Unknown/unsupported extension chain.
-				return nil, 0, nil, false
-			}
+		if frame[off+6] != 6 { // TCP
+			return nil, 0, nil, false
 		}
+		src := frame[off+8 : off+24]
+		tcpOff := off + 40
+		if len(frame) < tcpOff+20 {
+			return nil, 0, nil, false
+		}
+		dataOff := int(frame[tcpOff+12]>>4) * 4
+		if dataOff < 20 || len(frame) < tcpOff+dataOff {
+			return nil, 0, nil, false
+		}
+		sport := binary.BigEndian.Uint16(frame[tcpOff : tcpOff+2])
+		return src, sport, frame[tcpOff+dataOff:], true
+	}
 
-	default:
-		return nil, 0, nil, false
+	return nil, 0, nil, false
+}
+
+func (h *RecvHandle) Close() {
+	if h.handle != nil {
+		h.handle.Close()
 	}
 }

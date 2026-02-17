@@ -1,10 +1,9 @@
 package socks
 
 import (
-	"fmt"
 	"net"
-	"paqet/internal/diag"
 	"paqet/internal/flog"
+	"paqet/internal/pkg/buffer"
 
 	"github.com/txthinking/socks5"
 )
@@ -25,25 +24,12 @@ func (h *Handler) TCPHandle(server *socks5.Server, conn *net.TCPConn, r *socks5.
 }
 
 func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
-	flog.Debugf("SOCKS5 accepted TCP connection %s -> %s", conn.RemoteAddr(), r.Address())
-	defer conn.Close()
+	flog.Infof("SOCKS5 accepted TCP connection %s -> %s", conn.RemoteAddr(), r.Address())
 
-	la := conn.LocalAddr()
-	addr, ok := la.(*net.TCPAddr)
-	if !ok || addr == nil {
-		return fmt.Errorf("unexpected local address type: %T", la)
-	}
+	addr := conn.LocalAddr().(*net.TCPAddr)
 	bufp := rPool.Get().(*[]byte)
-	buf := (*bufp)[:0]
-	defer func() {
-		if cap(buf) > socksReplyBufCap {
-			b := make([]byte, 0, socksReplyBufCap)
-			*bufp = b
-		} else {
-			*bufp = buf[:0]
-		}
-		rPool.Put(bufp)
-	}()
+	defer rPool.Put(bufp)
+	buf := *bufp
 	buf = append(buf, socks5.Ver)
 	buf = append(buf, socks5.RepSuccess)
 	buf = append(buf, 0x00)
@@ -64,31 +50,31 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 		return err
 	}
 
-	strm, err := h.client.TCP(h.ctx, r.Address())
+	strm, err := h.client.TCP(r.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish stream for %s -> %s: %v", conn.RemoteAddr(), r.Address(), err)
 		return err
 	}
 	defer strm.Close()
-	flog.Debugf("SOCKS5 stream %d established for %s -> %s", strm.SID(), conn.RemoteAddr(), r.Address())
+	flog.Debugf("SOCKS5 stream %d created for %s -> %s", strm.SID(), conn.RemoteAddr(), r.Address())
 
-	errUp, errDown := diag.BidiCopy(
-		h.ctx,
-		conn,
-		strm,
-		func() error { return diag.CopyTCPUp(strm, conn) },
-		func() error { return diag.CopyTCPDown(conn, strm) },
-	)
+	errCh := make(chan error, 2)
+	go func() {
+		err := buffer.CopyT(conn, strm)
+		errCh <- err
+	}()
+	go func() {
+		err := buffer.CopyT(strm, conn)
+		errCh <- err
+	}()
 
-	if h.ctx.Err() != nil {
+	select {
+	case err := <-errCh:
+		if err != nil {
+			flog.Errorf("SOCKS5 stream %d failed for %s -> %s: %v", strm.SID(), conn.RemoteAddr(), r.Address(), err)
+		}
+	case <-h.ctx.Done():
 		flog.Debugf("SOCKS5 connection %s -> %s closed due to shutdown", conn.RemoteAddr(), r.Address())
-		return nil
-	}
-	if !diag.IsBenignStreamErr(errUp) {
-		flog.Errorf("SOCKS5 stream %d failed for %s -> %s (up): %v", strm.SID(), conn.RemoteAddr(), r.Address(), errUp)
-	}
-	if !diag.IsBenignStreamErr(errDown) {
-		flog.Errorf("SOCKS5 stream %d failed for %s -> %s (down): %v", strm.SID(), conn.RemoteAddr(), r.Address(), errDown)
 	}
 
 	flog.Debugf("SOCKS5 connection %s -> %s closed", conn.RemoteAddr(), r.Address())

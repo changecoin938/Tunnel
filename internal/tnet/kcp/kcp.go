@@ -9,15 +9,11 @@ import (
 )
 
 func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
-	// smux expects a byte-stream (TCP-like) connection. Enabling KCP stream mode
-	// reduces message-fragment head-of-line blocking and improves throughput.
-	conn.SetStreamMode(true)
-
 	var noDelay, interval, resend, noCongestion int
 	var wDelay, ackNoDelay bool
 	switch cfg.Mode {
 	case "normal":
-		noDelay, interval, resend, noCongestion = 0, 40, 2, 0
+		noDelay, interval, resend, noCongestion = 0, 40, 2, 1
 		wDelay, ackNoDelay = true, false
 	case "fast":
 		noDelay, interval, resend, noCongestion = 0, 30, 2, 1
@@ -26,7 +22,7 @@ func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
 		noDelay, interval, resend, noCongestion = 1, 20, 2, 1
 		wDelay, ackNoDelay = false, true
 	case "fast3":
-		noDelay, interval, resend, noCongestion = 1, 15, 2, 1
+		noDelay, interval, resend, noCongestion = 1, 10, 2, 1
 		wDelay, ackNoDelay = false, true
 	case "manual":
 		noDelay, interval, resend, noCongestion = cfg.NoDelay, cfg.Interval, cfg.Resend, cfg.NoCongestion
@@ -38,15 +34,14 @@ func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
 	conn.SetMtu(cfg.MTU)
 	conn.SetWriteDelay(wDelay)
 	conn.SetACKNoDelay(ackNoDelay)
+	conn.SetDSCP(46)
 }
 
 func smuxConf(cfg *conf.KCP) *smux.Config {
 	var sconf = smux.DefaultConfig()
 	sconf.Version = 2
-	// Be conservative: cross-border links can have jitter/bursts, and aggressive
-	// keepalives can cause unnecessary session resets under mild loss.
-	sconf.KeepAliveInterval = 10 * time.Second
-	sconf.KeepAliveTimeout = 60 * time.Second
+	sconf.KeepAliveInterval = 2 * time.Second
+	sconf.KeepAliveTimeout = 8 * time.Second
 	sconf.MaxFrameSize = 65535
 	sconf.MaxReceiveBuffer = cfg.Smuxbuf
 	sconf.MaxStreamBuffer = cfg.Streambuf

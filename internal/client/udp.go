@@ -1,26 +1,23 @@
 package client
 
 import (
-	"context"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/hash"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
-	"time"
 )
 
-func (c *Client) UDP(ctx context.Context, lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
+func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 	key := hash.AddrPair(lAddr, tAddr)
 	c.udpPool.mu.RLock()
-	if strm, exists := c.udpPool.strms[key]; exists && strm != nil {
+	if strm, exists := c.udpPool.strms[key]; exists {
 		c.udpPool.mu.RUnlock()
-		strm.touch()
 		flog.Debugf("reusing UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
 		return strm, false, key, nil
 	}
 	c.udpPool.mu.RUnlock()
 
-	strm, err := c.newStrm(ctx)
+	strm, err := c.newStrm()
 	if err != nil {
 		flog.Debugf("failed to create stream for UDP %s -> %s: %v", lAddr, tAddr, err)
 		return nil, false, 0, err
@@ -33,47 +30,24 @@ func (c *Client) UDP(ctx context.Context, lAddr, tAddr string) (tnet.Strm, bool,
 		return nil, false, 0, err
 	}
 	p := protocol.Proto{Type: protocol.PUDP, Addr: taddr}
-	if c.cfg.Transport.KCP != nil && c.cfg.Transport.KCP.HeaderTimeout > 0 {
-		_ = strm.SetWriteDeadline(time.Now().Add(time.Duration(c.cfg.Transport.KCP.HeaderTimeout) * time.Second))
-	}
 	err = p.Write(strm)
-	_ = strm.SetWriteDeadline(time.Time{})
 	if err != nil {
 		flog.Debugf("failed to write UDP protocol header for %s -> %s on stream %d: %v", lAddr, tAddr, strm.SID(), err)
 		strm.Close()
 		return nil, false, 0, err
 	}
 
-	tracked := &udpTrackedStrm{Strm: strm}
-	tracked.touch()
-	var toClose []*udpTrackedStrm
 	c.udpPool.mu.Lock()
-	if existing, exists := c.udpPool.strms[key]; exists && existing != nil {
+	if strm2, exists := c.udpPool.strms[key]; exists {
 		c.udpPool.mu.Unlock()
-		_ = tracked.Close()
-		existing.touch()
-		flog.Debugf("reusing UDP stream %d for %s -> %s (raced create avoided)", existing.SID(), lAddr, tAddr)
-		return existing, false, key, nil
+		strm.Close()
+		return strm2, false, key, nil
 	}
-	// Best-effort: if the pool grows too large due to abusive UDP fan-out, evict idle entries.
-	if c.udpPool.maxEntries == 0 {
-		c.udpPool.maxEntries = udpPoolMaxEntriesDefault
-	}
-	if c.udpPool.idleTimeout == 0 {
-		c.udpPool.idleTimeout = udpPoolIdleTimeoutDefault
-	}
-	if c.udpPool.maxEntries > 0 && len(c.udpPool.strms) >= c.udpPool.maxEntries {
-		toClose = c.udpPool.evictLocked(time.Now())
-	}
-	c.udpPool.strms[key] = tracked
+	c.udpPool.strms[key] = strm
 	c.udpPool.mu.Unlock()
 
-	for _, s := range toClose {
-		_ = s.Close()
-	}
-
-	flog.Debugf("established UDP stream %d for %s -> %s", strm.SID(), lAddr, tAddr)
-	return tracked, true, key, nil
+	flog.Debugf("UDP stream %d created for %s -> %s", strm.SID(), lAddr, tAddr)
+	return strm, true, key, nil
 }
 
 func (c *Client) CloseUDP(key uint64) error {
