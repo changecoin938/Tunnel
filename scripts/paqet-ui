@@ -150,11 +150,11 @@ pick_kcp_window() {
 }
 
 pick_smuxbuf() {
-  echo $(( 16 * 1024 * 1024 ))
+  echo $(( 4 * 1024 * 1024 ))
 }
 
 pick_streambuf() {
-  echo $(( 4 * 1024 * 1024 ))
+  echo $(( 256 * 1024 ))
 }
 
 adjust_conn_to_free_server_port_range() {
@@ -1263,8 +1263,8 @@ gen_server_config() {
   key_q="$(yaml_quote "${key}")"
   if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then conn=1; fi
   if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
-  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((16*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((4*1024*1024)); fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((256*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "server"
 
@@ -1305,8 +1305,8 @@ transport:
     guard_magic: "PQT1"
     guard_window: 30
     guard_skew: 1
-    max_sessions: 128
-    max_streams_total: 16384
+    max_sessions: 2048
+    max_streams_total: 65536
     max_streams_per_session: 4096
     header_timeout: 10
     smuxbuf: ${smuxbuf}
@@ -1326,8 +1326,8 @@ gen_client_config_no_socks() {
     conn=256
   fi
   if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
-  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((16*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((4*1024*1024)); fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((256*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "client"
 

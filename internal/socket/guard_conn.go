@@ -1,9 +1,11 @@
 package socket
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"hash"
 	"net"
 	"paqet/internal/conf"
 	"paqet/internal/diag"
@@ -27,6 +29,7 @@ type guardState struct {
 	skew          int
 
 	key [32]byte
+	mac sync.Pool
 
 	state atomic.Value // stores *guardCookies
 }
@@ -52,6 +55,9 @@ func newGuardState(k *conf.KCP) *guardState {
 	// Derive a dedicated key for guard cookies.
 	dk := pbkdf2.Key([]byte(k.Key), []byte("paqet_guard"), 100_000, 32, sha256.New)
 	copy(st.key[:], dk)
+	st.mac = sync.Pool{
+		New: func() any { return hmac.New(sha256.New, st.key[:]) },
+	}
 
 	// Warm the cache so the first packet doesn't pay extra overhead.
 	st.getCookies()
@@ -107,7 +113,7 @@ func (g *GuardConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 			// Drop undersized packet.
 			continue
 		}
-		if !hmac.Equal(p[0:4], g.st.magic[:]) {
+		if !bytes.Equal(p[0:4], g.st.magic[:]) {
 			diag.AddGuardDrop()
 			continue
 		}
@@ -179,10 +185,19 @@ func (g *guardState) cookie(win uint64) [8]byte {
 	var winb [8]byte
 	binary.BigEndian.PutUint64(winb[:], win)
 
-	mac := hmac.New(sha256.New, g.key[:])
-	mac.Write(g.magic[:])
-	mac.Write(winb[:])
-	sum := mac.Sum(nil)
+	v := g.mac.Get()
+	var mac hash.Hash
+	if v == nil {
+		mac = hmac.New(sha256.New, g.key[:])
+	} else {
+		mac = v.(hash.Hash)
+	}
+	defer g.mac.Put(mac)
+	mac.Reset()
+	_, _ = mac.Write(g.magic[:])
+	_, _ = mac.Write(winb[:])
+	var full [32]byte
+	sum := mac.Sum(full[:0])
 
 	var out [8]byte
 	copy(out[:], sum[:8])

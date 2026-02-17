@@ -325,8 +325,8 @@ Incoming: wire -> Guard validate/strip -> KCP decrypt (and verify tag in GCM) ->
 
 To reduce disruption under load, the server can cap sessions/streams and bound stalled stream setup:
 
-- `transport.kcp.max_sessions` (default: 1024, server only; set `-1` to disable)
-- `transport.kcp.max_streams_total` (default: 32768, server only; set `-1` to disable)
+- `transport.kcp.max_sessions` (default: 2048, server only; set `-1` to disable)
+- `transport.kcp.max_streams_total` (default: 65536, server only; set `-1` to disable)
 - `transport.kcp.max_streams_per_session` (default: 4096, server only; set `-1` to disable)
 - `transport.kcp.header_timeout` (default: 10 seconds)
 

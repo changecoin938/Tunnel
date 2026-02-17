@@ -34,8 +34,16 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 		return fmt.Errorf("unexpected local address type: %T", la)
 	}
 	bufp := rPool.Get().(*[]byte)
-	defer rPool.Put(bufp)
-	buf := *bufp
+	buf := (*bufp)[:0]
+	defer func() {
+		if cap(buf) > socksReplyBufCap {
+			b := make([]byte, 0, socksReplyBufCap)
+			*bufp = b
+		} else {
+			*bufp = buf[:0]
+		}
+		rPool.Put(bufp)
+	}()
 	buf = append(buf, socks5.Ver)
 	buf = append(buf, socks5.RepSuccess)
 	buf = append(buf, 0x00)

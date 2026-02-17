@@ -100,21 +100,21 @@ func (k *KCP) setDefaults(role string, _ int) {
 	// Match UI/examples defaults for server-side limits.
 	if role == "server" {
 		if k.MaxSessions == 0 {
-			k.MaxSessions = 128
+			k.MaxSessions = 2048
 		}
 	}
 
 	if k.Smuxbuf == 0 {
-		k.Smuxbuf = 16 * 1024 * 1024
+		k.Smuxbuf = 4 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		k.Streambuf = 4 * 1024 * 1024
+		k.Streambuf = 256 * 1024
 	}
 
 	// Match UI/examples defaults for server-side limits.
 	if role == "server" {
 		if k.MaxStreamsTotal == 0 {
-			k.MaxStreamsTotal = 16384
+			k.MaxStreamsTotal = 65536
 		}
 		if k.MaxStreamsPerSession == 0 {
 			k.MaxStreamsPerSession = 4096

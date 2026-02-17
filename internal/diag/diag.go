@@ -10,6 +10,8 @@ import (
 
 var startTime = time.Now()
 
+const rawLastAtSampleMask = 63 // sample once per 64 packets
+
 // enabled controls whether diag counters are active.
 // Keep this false in production unless you need /debug/paqet/* endpoints or counters.
 var enabled bool
@@ -170,9 +172,11 @@ func AddRawUp(n int) {
 		return
 	}
 	if n > 0 {
-		rawUpPackets.Add(1)
+		pkts := rawUpPackets.Add(1)
 		rawUpBytes.Add(uint64(n))
-		rawLastUpAt.Store(time.Now().UnixNano())
+		if pkts == 1 || pkts&rawLastAtSampleMask == 0 {
+			rawLastUpAt.Store(time.Now().UnixNano())
+		}
 	}
 }
 
@@ -191,9 +195,11 @@ func AddRawDown(n int) {
 		return
 	}
 	if n > 0 {
-		rawDownPackets.Add(1)
+		pkts := rawDownPackets.Add(1)
 		rawDownBytes.Add(uint64(n))
-		rawLastDownAt.Store(time.Now().UnixNano())
+		if pkts == 1 || pkts&rawLastAtSampleMask == 0 {
+			rawLastDownAt.Store(time.Now().UnixNano())
+		}
 	}
 }
 

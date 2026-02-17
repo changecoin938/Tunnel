@@ -135,7 +135,7 @@ func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
 				diag.AddGuardDrop()
 				continue
 			}
-			if !hmac.Equal(payload[0:4], g.magic[:]) {
+			if !bytes.Equal(payload[0:4], g.magic[:]) {
 				diag.AddGuardDrop()
 				continue
 			}
@@ -247,7 +247,7 @@ func (c *PacketConn) enqueueCoalesced(payload []byte, addr net.Addr, g *guardSta
 	// Split on validated guard headers.
 	var parts [][]byte
 	for pos := 0; pos+guardHeaderLen <= len(buf); {
-		if !hmac.Equal(buf[pos:pos+4], g.magic[:]) {
+		if !bytes.Equal(buf[pos:pos+4], g.magic[:]) {
 			diag.AddGuardDrop()
 			pos++
 			continue

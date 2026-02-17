@@ -39,9 +39,9 @@ transport:
     guard_magic: "PQT1"
     guard_window: 30
     guard_skew: 1
-    max_sessions: 128
-    max_streams_total: 16384
+    max_sessions: 2048
+    max_streams_total: 65536
     max_streams_per_session: 4096
     header_timeout: 10
-    smuxbuf: 16777216
-    streambuf: 4194304
+    smuxbuf: 4194304
+    streambuf: 262144

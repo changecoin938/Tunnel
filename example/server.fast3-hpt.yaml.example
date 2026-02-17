@@ -42,10 +42,10 @@ transport:
     header_timeout: 10
 
     # Server-side limits (recommended for this profile)
-    max_sessions: 128
-    max_streams_total: 16384
+    max_sessions: 2048
+    max_streams_total: 65536
     max_streams_per_session: 4096
 
     # Multiplexing buffers
-    smuxbuf: 16777216
-    streambuf: 4194304
+    smuxbuf: 4194304
+    streambuf: 262144
