@@ -2,6 +2,7 @@ package diag
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"time"
 )
@@ -48,9 +49,19 @@ func BidiCopy(ctx context.Context, a net.Conn, b net.Conn, f1 func() error, f2 f
 	}
 
 	for got < 2 {
-		res := <-errCh
-		errs[res.idx] = res.err
-		got++
+		select {
+		case res := <-errCh:
+			errs[res.idx] = res.err
+			got++
+		case <-time.After(30 * time.Second):
+			if errs[0] == nil {
+				errs[0] = fmt.Errorf("bidi copy timeout waiting for goroutine shutdown")
+			}
+			if errs[1] == nil {
+				errs[1] = fmt.Errorf("bidi copy timeout waiting for goroutine shutdown")
+			}
+			return errs[0], errs[1]
+		}
 	}
 
 	return errs[0], errs[1]

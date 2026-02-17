@@ -26,7 +26,7 @@ func aplConf(conn *kcp.UDPSession, cfg *conf.KCP) {
 		noDelay, interval, resend, noCongestion = 1, 20, 2, 1
 		wDelay, ackNoDelay = false, true
 	case "fast3":
-		noDelay, interval, resend, noCongestion = 1, 10, 2, 1
+		noDelay, interval, resend, noCongestion = 1, 20, 2, 1
 		wDelay, ackNoDelay = false, true
 	case "manual":
 		noDelay, interval, resend, noCongestion = cfg.NoDelay, cfg.Interval, cfg.Resend, cfg.NoCongestion
@@ -45,8 +45,8 @@ func smuxConf(cfg *conf.KCP) *smux.Config {
 	sconf.Version = 2
 	// Be conservative: cross-border links can have jitter/bursts, and aggressive
 	// keepalives can cause unnecessary session resets under mild loss.
-	sconf.KeepAliveInterval = 5 * time.Second
-	sconf.KeepAliveTimeout = 15 * time.Second
+	sconf.KeepAliveInterval = 10 * time.Second
+	sconf.KeepAliveTimeout = 60 * time.Second
 	sconf.MaxFrameSize = 65535
 	sconf.MaxReceiveBuffer = cfg.Smuxbuf
 	sconf.MaxStreamBuffer = cfg.Streambuf

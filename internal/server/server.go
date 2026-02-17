@@ -134,7 +134,7 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 		<-ctx.Done()
 		listener.Close()
 	}()
-	acceptBackoff := 100 * time.Millisecond
+	acceptBackoff := 5 * time.Millisecond
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -143,15 +143,15 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			}
 			flog.Warnf("failed to accept connection: %v", err)
 			time.Sleep(acceptBackoff)
-			if acceptBackoff < 5*time.Second {
+			if acceptBackoff < 1*time.Second {
 				acceptBackoff *= 2
-				if acceptBackoff > 5*time.Second {
-					acceptBackoff = 5 * time.Second
+				if acceptBackoff > 1*time.Second {
+					acceptBackoff = 1 * time.Second
 				}
 			}
 			continue
 		}
-		acceptBackoff = 100 * time.Millisecond
+		acceptBackoff = 5 * time.Millisecond
 		if s.sessSem != nil {
 			select {
 			case s.sessSem <- struct{}{}:

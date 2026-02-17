@@ -10,7 +10,6 @@ import (
 	"os"
 	"paqet/internal/conf"
 	"paqet/internal/diag"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -338,26 +337,53 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	//
 	// Note: returning a non-nil error here will cause kcp-go to tear down the
 	// session. For transient ENOBUFS/ENOMEM we must keep the session alive.
-	if prefix != nil {
-		err = c.sendHandle.WriteParts(prefix, data, daddr)
-	} else {
-		err = c.sendHandle.Write(data, daddr)
+	writeOnce := func() error {
+		if prefix != nil {
+			return c.sendHandle.WriteParts(prefix, data, daddr)
+		}
+		return c.sendHandle.Write(data, daddr)
 	}
+
+	err = writeOnce()
 	if err == nil {
 		diag.AddRawUp(wireLen)
 		return len(data), nil
 	}
 	// libpcap returns plain string errors via pcap_geterr (no errno), so also
 	// match by message to detect ENOBUFS/ENOMEM.
-	if errors.Is(err, syscall.ENOBUFS) ||
+	if !(errors.Is(err, syscall.ENOBUFS) ||
 		errors.Is(err, syscall.ENOMEM) ||
 		strings.Contains(err.Error(), "No buffer space available") ||
-		strings.Contains(err.Error(), "Cannot allocate memory") {
-		diag.AddRawUpDrop(wireLen)
-		runtime.Gosched()
-		return len(data), nil
+		strings.Contains(err.Error(), "Cannot allocate memory")) {
+		return 0, err
 	}
-	return 0, err
+
+	// Transient kernel buffer pressure: retry briefly with exponential backoff.
+	backoff := 200 * time.Microsecond
+	for retries := 0; retries < 6; retries++ {
+		diag.AddRawUpDrop(wireLen)
+		time.Sleep(backoff)
+		if backoff < 5*time.Millisecond {
+			backoff *= 2
+			if backoff > 5*time.Millisecond {
+				backoff = 5 * time.Millisecond
+			}
+		}
+		err = writeOnce()
+		if err == nil {
+			diag.AddRawUp(wireLen)
+			return len(data), nil
+		}
+		if !(errors.Is(err, syscall.ENOBUFS) ||
+			errors.Is(err, syscall.ENOMEM) ||
+			strings.Contains(err.Error(), "No buffer space available") ||
+			strings.Contains(err.Error(), "Cannot allocate memory")) {
+			return 0, err
+		}
+	}
+
+	diag.AddRawUpDrop(wireLen)
+	return len(data), nil
 }
 
 func (c *PacketConn) Close() error {

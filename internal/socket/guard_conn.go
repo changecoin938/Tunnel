@@ -165,7 +165,7 @@ func (g *GuardConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 func (g *guardState) getCookies() *guardCookies {
 	if v := g.state.Load(); v != nil {
 		c := v.(*guardCookies)
-		if g.hitCount.Add(1)&1023 != 0 {
+		if g.hitCount.Add(1)&255 != 0 {
 			return c
 		}
 		nowWin := uint64(time.Now().Unix() / g.windowSeconds)
