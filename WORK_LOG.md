@@ -26,3 +26,9 @@ This file is updated after each push/release.
 - Updated key generation logic to avoid overwriting recovered key.
 - Added backup notice in installer summary output.
 - Updated execution order to: detect network -> handle existing -> install dependencies -> continue setup.
+
+### Release v1.0.22
+- Added resilient download fallback flow in `install.sh` for release assets.
+- Download now tries: direct release URL -> GitHub API asset endpoint -> `wget` fallback.
+- Added curl timeout controls and explicit failure guidance for blocked CDN environments.
+- Added `wget` to dependency install list for apt/yum/apk paths.

@@ -171,11 +171,11 @@ install_deps() {
     echo -e "${CYAN}Installing dependencies...${NC}"
     if command -v apt-get >/dev/null 2>&1; then
         apt-get update -qq
-        apt-get install -y -qq libpcap-dev tar gzip curl iproute2 iptables iputils-ping net-tools >/dev/null 2>&1
+        apt-get install -y -qq libpcap-dev tar gzip curl wget iproute2 iptables iputils-ping net-tools >/dev/null 2>&1
     elif command -v yum >/dev/null 2>&1; then
-        yum install -y -q libpcap-devel tar gzip curl iproute iptables iputils net-tools >/dev/null 2>&1
+        yum install -y -q libpcap-devel tar gzip curl wget iproute iptables iputils net-tools >/dev/null 2>&1
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache libpcap-dev tar gzip curl iproute2 iptables iputils net-tools >/dev/null 2>&1
+        apk add --no-cache libpcap-dev tar gzip curl wget iproute2 iptables iputils net-tools >/dev/null 2>&1
     fi
     echo -e "${GREEN}Dependencies installed${NC}"
 }
@@ -212,13 +212,41 @@ download_binary() {
 
     echo -e "${GREEN}Release: ${tag}${NC}"
 
-    local url="https://github.com/${REPO}/releases/download/${tag}/paqet-linux-${ARCH}-${tag}.tar.gz"
+    local filename="paqet-linux-${ARCH}-${tag}.tar.gz"
+    local url="https://github.com/${REPO}/releases/download/${tag}/${filename}"
     local tmp_dir
     tmp_dir=$(mktemp -d)
+    local ok=false
 
     echo -e "${CYAN}Downloading: ${url}${NC}"
-    if ! curl -fsSL "$url" -o "${tmp_dir}/paqet.tar.gz"; then
-        echo -e "${RED}Error: download failed${NC}" >&2
+    if curl -fsSL --connect-timeout 15 --max-time 120 "$url" -o "${tmp_dir}/paqet.tar.gz" 2>/dev/null; then
+        ok=true
+    fi
+
+    if [[ "$ok" == false ]]; then
+        echo -e "${YELLOW}Direct download failed, trying API method...${NC}"
+        local asset_url
+        asset_url=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/${tag}" 2>/dev/null | awk -v f="\"name\": \"${filename}\"" '
+            /"url":/ {u=$0; gsub(/.*"url":[[:space:]]*"/, "", u); gsub(/".*/, "", u)}
+            $0 ~ f {print u; exit}
+        ')
+        if [[ -n "$asset_url" ]]; then
+            if curl -fsSL --connect-timeout 15 --max-time 120 -H "Accept: application/octet-stream" "$asset_url" -o "${tmp_dir}/paqet.tar.gz" 2>/dev/null; then
+                ok=true
+            fi
+        fi
+    fi
+
+    if [[ "$ok" == false ]] && command -v wget >/dev/null 2>&1; then
+        echo -e "${YELLOW}curl failed, trying wget...${NC}"
+        if wget -q --timeout=30 "$url" -O "${tmp_dir}/paqet.tar.gz" 2>/dev/null; then
+            ok=true
+        fi
+    fi
+
+    if [[ "$ok" == false ]]; then
+        echo -e "${RED}Error: all download methods failed${NC}" >&2
+        echo -e "${YELLOW}Try manually: wget ${url}${NC}" >&2
         rm -rf "$tmp_dir"
         exit 1
     fi
