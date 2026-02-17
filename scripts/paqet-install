@@ -2,11 +2,11 @@
 set -euo pipefail
 
 ###############################################################################
-# paqet-install  —  one-command installer (builds from source)
+# paqet-install  —  one-command installer
 #
 # Step 1 — Kharej (server):
 #   curl -sL URL | bash -s -- server
-#   → detects IP, generates key, builds from source, prints client command
+#   → detects IP, generates key, prints client command
 #
 # Step 2 — Iran (client) — copy from server output:
 #   curl -sL URL | bash -s -- client SERVER_IP KEY
@@ -14,10 +14,7 @@ set -euo pipefail
 ###############################################################################
 
 REPO="changecoin938/Tunnel"
-REPO_URL="https://github.com/${REPO}.git"
 BRANCH="main"
-GO_MIN="1.25"
-BUILD_DIR="/tmp/paqet-build"
 BIN_DIR="/usr/local/bin"
 LIB_DIR="/usr/local/lib/paqet"
 CONF_DIR="/etc/paqet"
@@ -38,6 +35,14 @@ die()   { error "$*"; exit 1; }
 
 [[ "${EUID}" -eq 0 ]] || die "Run as root"
 
+# ─── Resolve latest release tag ─────────────────────────────────────────────
+VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4)" || true
+if [[ -z "${VERSION}" ]]; then
+  VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)" || true
+fi
+[[ -n "${VERSION}" ]] || die "Cannot resolve latest release"
+info "Latest release: ${VERSION}"
+
 # ─── Parse args ──────────────────────────────────────────────────────────────
 ROLE="${1:-}"
 INSTALL_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/paqet-install"
@@ -53,14 +58,13 @@ elif [[ "${ROLE}" == "client" ]]; then
   if [[ -z "${SERVER_IP}" || -z "${KEY}" ]]; then
     echo ""
     echo "Usage:  curl -sL URL | bash -s -- client SERVER_IP KEY"
-    echo ""
     echo "Get SERVER_IP and KEY from server install output."
     die "Missing SERVER_IP or KEY"
   fi
 
 else
   echo ""
-  printf "${CYAN}paqet Installer (build from source)${NC}\n\n"
+  printf "${CYAN}paqet Installer${NC}\n\n"
   echo "Step 1 — Kharej (server):  curl -sL ${INSTALL_URL} | bash -s -- server"
   echo "Step 2 — Iran (client):    copy the command from server output"
   echo ""
@@ -97,9 +101,8 @@ detect_network() {
 
   if [[ -z "${MAC}" ]]; then
     error "Cannot detect gateway MAC"
-    echo "--- ip neigh ---"
     ip neigh 2>/dev/null || true
-    die "Run with: MAC=xx:xx:xx:xx:xx:xx bash -s -- ${ROLE} ..."
+    die "Set MAC=xx:xx:xx:xx:xx:xx before running"
   fi
 }
 
@@ -109,92 +112,37 @@ info "Interface : ${IFACE}"
 info "IP        : ${IP}"
 info "MAC       : ${MAC}"
 
-# ─── Install Go if needed ───────────────────────────────────────────────────
-install_go() {
-  if command -v go >/dev/null 2>&1; then
-    local ver
-    ver="$(go version | grep -oE '[0-9]+\.[0-9]+' | head -1)"
-    if awk "BEGIN{exit(!($ver >= $GO_MIN))}"; then
-      info "Go ${ver} found"
-      return
-    fi
-  fi
+# ─── Download binary ─────────────────────────────────────────────────────────
+info "Downloading paqet ${VERSION} ..."
 
-  info "Installing Go ..."
-  local arch
-  arch="$(uname -m)"
-  case "${arch}" in
-    x86_64|amd64) arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    *) die "Unsupported arch: ${arch}" ;;
-  esac
+ARCH="$(uname -m)"
+case "${ARCH}" in
+  x86_64|amd64)  ASSET_TAR="paqet-linux-amd64.tar.gz"; BIN_TAR="paqet_linux_amd64" ;;
+  aarch64|arm64)  ASSET_TAR="paqet-linux-arm64.tar.gz"; BIN_TAR="paqet_linux_arm64" ;;
+  *) die "Unsupported arch: ${ARCH}" ;;
+esac
 
-  local go_ver="1.25.0"
-  local go_file="go${go_ver}.linux-${arch}.tar.gz"
-  local -a mirrors=(
-    "https://github.com/golang/go/releases/download/go${go_ver}/${go_file}"
-    "https://go.dev/dl/${go_file}"
-    "https://dl.google.com/go/${go_file}"
-    "https://mirrors.aliyun.com/golang/${go_file}"
-  )
-  local ok=false
-  for url in "${mirrors[@]}"; do
-    info "Trying ${url} ..."
-    if curl -fsSL --connect-timeout 15 "${url}" -o /tmp/go.tar.gz 2>/dev/null; then
-      ok=true
-      break
-    fi
-  done
-  [[ "${ok}" == "true" ]] || die "Cannot download Go from any mirror"
-  rm -rf /usr/local/go
-  tar -C /usr/local -xzf /tmp/go.tar.gz
-  rm -f /tmp/go.tar.gz
-  export PATH="/usr/local/go/bin:${PATH}"
-  info "Go $(go version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') installed"
-}
+URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET_TAR}"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
 
-install_go
-
-# ─── Install libpcap (needed by gopacket) ────────────────────────────────────
-if ! dpkg -s libpcap-dev >/dev/null 2>&1; then
-  info "Installing libpcap-dev ..."
-  apt-get update -qq >/dev/null 2>&1
-  apt-get install -y -qq libpcap-dev >/dev/null 2>&1
-fi
-
-# ─── Build from source ──────────────────────────────────────────────────────
-info "Cloning and building paqet ..."
-
-rm -rf "${BUILD_DIR}"
-git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${BUILD_DIR}" 2>/dev/null
-
-cd "${BUILD_DIR}"
-export GOPROXY="https://goproxy.io,https://proxy.golang.org,direct"
-export GOTOOLCHAIN=local
-CGO_ENABLED=1 go build -o paqet ./cmd
-[[ -f paqet ]] || die "Build failed"
-
-PAQET_VERSION="$(./paqet version 2>/dev/null | head -1 | awk '{print $2}')" || true
-info "Built: ${PAQET_VERSION:-unknown}"
+curl -fsSL "${URL}" -o "${TMP_DIR}/paqet.tar.gz"
+tar xzf "${TMP_DIR}/paqet.tar.gz" -C "${TMP_DIR}"
+[[ -f "${TMP_DIR}/${BIN_TAR}" ]] || die "Binary not found in tarball"
 
 systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
-install -m 0755 paqet "${BIN_DIR}/paqet"
-info "Binary installed"
+install -m 0755 "${TMP_DIR}/${BIN_TAR}" "${BIN_DIR}/paqet"
+info "Binary installed: ${VERSION}"
 
-# ─── Helper scripts ──────────────────────────────────────────────────────────
+# ─── Helper scripts (from repo) ─────────────────────────────────────────────
 mkdir -p "${LIB_DIR}"
-for s in scripts/paqet-iptables.sh scripts/paqet-systemd-iptables.sh; do
-  if [[ -f "${s}" ]]; then
-    install -m 0755 "${s}" "${LIB_DIR}/$(basename "${s}")"
-  fi
+SCRIPTS_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts"
+for s in paqet-iptables.sh paqet-systemd-iptables.sh; do
+  curl -fsSL "${SCRIPTS_URL}/${s}" -o "${LIB_DIR}/${s}" 2>/dev/null || true
+  chmod +x "${LIB_DIR}/${s}" 2>/dev/null || true
 done
-if [[ -f scripts/paqet-update ]]; then
-  install -m 0755 scripts/paqet-update "${BIN_DIR}/paqet-update"
-fi
-
-# Cleanup build
-cd /
-rm -rf "${BUILD_DIR}"
+curl -fsSL "${SCRIPTS_URL}/paqet-update" -o "${BIN_DIR}/paqet-update" 2>/dev/null || true
+chmod +x "${BIN_DIR}/paqet-update" 2>/dev/null || true
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 info "Generating config ..."
@@ -286,6 +234,8 @@ forward:
     protocol: "tcp"
 YAML
 fi
+
+info "Config: ${CONF_FILE}"
 
 # ─── Systemd ────────────────────────────────────────────────────────────────
 cat > "${SERVICE_FILE}" <<'UNIT'
