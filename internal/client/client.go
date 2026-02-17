@@ -61,18 +61,15 @@ func (c *Client) Start(ctx context.Context) error {
 	for i := range c.cfg.Transport.Conn {
 		tc, err := newTimedConn(ctx, c.cfg, i, c)
 		if tc == nil {
-			// Fatal config error (e.g., port range too large).
 			return err
 		}
 		items = append(items, tc)
 	}
-	// Assign once before any goroutine reads from the iterator.
 	c.iter.Items = items
 	for _, tc := range c.iter.Items {
 		go tc.maintain()
 	}
 	flog.Infof("client initializing %d tunnel connections in background", len(c.iter.Items))
-	// The ticker is only for diagnostics (ping RTT). Avoid extra streams/CPU in production.
 	if diag.Enabled() {
 		go c.ticker(ctx)
 	}

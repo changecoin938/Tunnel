@@ -149,8 +149,6 @@ func (tc *timedConn) applyConnIndex(connIndex int) error {
 	}
 	basePort := tc.netCfg.Port
 	if basePort == 0 {
-		// Random port mode: leave Port=0 so socket.New picks a random port per timedConn.
-		// We intentionally do NOT apply an offset because port=0 is a special "random" value.
 		return nil
 	}
 
@@ -218,7 +216,6 @@ func (tc *timedConn) reconnect() error {
 			tc.mu.Unlock()
 			select {
 			case <-ch:
-				// Re-check connection after another goroutine finishes reconnecting.
 				continue
 			case <-tc.ctx.Done():
 				return tc.ctx.Err()
@@ -231,8 +228,6 @@ func (tc *timedConn) reconnect() error {
 		conn, err := tc.reconnectLoop()
 
 		tc.mu.Lock()
-		// If we reconnected successfully but someone else already set tc.conn (should be rare),
-		// prefer the existing one and close ours to avoid leaks.
 		if err == nil {
 			if tc.conn == nil {
 				tc.conn = conn
@@ -284,7 +279,6 @@ func (tc *timedConn) reconnectLoop() (tnet.Conn, error) {
 }
 
 func (tc *timedConn) maintain() {
-	// Establish as soon as possible. Never block caller.
 	_ = tc.reconnect()
 
 	for {
