@@ -1,5 +1,5 @@
-# paqet client default profile (fast2 + memory-safe baseline)
-# Replace IP/router_mac/server/key for your environment.
+# paqet client — production default
+# Replace IRAN_IP, GATEWAY_MAC, KHAREJ_IP, YOUR-SECRET-KEY
 role: "client"
 
 log:
@@ -13,35 +13,32 @@ network:
   interface: "ens3"
   dscp: 0
   ipv4:
-    addr: "10.0.0.101:20000"
-    router_mac: "aa:bb:cc:dd:ee:ff"
+    addr: "IRAN_IP:20000"
+    router_mac: "GATEWAY_MAC"
   pcap:
     sockbuf: 16777216
     snaplen: 65535
     promisc: false
-    immediate: false
-    timeout_ms: 5
+    immediate: true
+    timeout_ms: 0
 
 server:
-  addr: "10.0.0.100:9999"
+  addr: "KHAREJ_IP:9999"
 
 transport:
   protocol: "kcp"
-  conn: 2
+  conn: 10
   kcp:
-    mode: "fast2"
+    mode: "fast3"
     mtu: 1350
-    rcvwnd: 1024
-    sndwnd: 1024
-    block: "aes-128-gcm"
-    key: "your-secret-key-here"
+    rcvwnd: 8192
+    sndwnd: 8192
+    block: "aes"
+    key: "YOUR-SECRET-KEY"
     guard: true
     guard_magic: "PQT1"
-    guard_window: 30
-    guard_skew: 1
-    header_timeout: 10
-    smuxbuf: 2097152
-    streambuf: 131072
+    smuxbuf: 16777216
+    streambuf: 4194304
 
 forward:
   - listen: "0.0.0.0:443"
