@@ -2,18 +2,16 @@
 set -euo pipefail
 
 ###############################################################################
-# paqet-install  —  one-command installer for paqet v0.1.28 (rev2)
+# paqet-install  —  one-command installer for paqet v0.1.28
 #
-# Usage (on server):
-#   curl -sL https://raw.githubusercontent.com/changecoin938/Tunnel/release/v0.1.28/scripts/paqet-install | bash
+# Server:
+#   curl -sL URL | bash -s -- server KEY
 #
-# Or with arguments:
-#   curl -sL ... | bash -s -- --role server --ip 167.235.152.44 --port 9999 \
-#       --key "mykey" --iface eth0 --mac "d2:74:7f:6e:37:e3"
+# Client:
+#   curl -sL URL | bash -s -- client SERVER_IP KEY
 #
-#   curl -sL ... | bash -s -- --role client --ip 78.157.36.135 --client-port 20000 \
-#       --server-ip 167.235.152.44 --port 9999 \
-#       --key "mykey" --iface ens3 --mac "24:e9:b3:9d:cc:fc"
+# Everything else (interface, IP, MAC, port) is auto-detected.
+# Override with env vars: IFACE, IP, MAC, PORT, CLIENT_PORT, SERVER_IP, KEY
 ###############################################################################
 
 VERSION="v0.1.28"
@@ -34,113 +32,69 @@ NC='\033[0m'
 info()  { printf "${GREEN}[+]${NC} %s\n" "$*"; }
 warn()  { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
 error() { printf "${RED}[✗]${NC} %s\n" "$*" >&2; }
-ask()   { printf "${CYAN}[?]${NC} %s" "$*"; }
+die()   { error "$*"; exit 1; }
 
 # ─── Root check ──────────────────────────────────────────────────────────────
-if [[ "${EUID}" -ne 0 ]]; then
-  error "Run as root:  curl -sL URL | sudo bash"
-  exit 1
-fi
+[[ "${EUID}" -eq 0 ]] || die "Run as root"
 
-# ─── Parse CLI args ──────────────────────────────────────────────────────────
-ROLE="" IP="" PORT="9999" CLIENT_PORT="20000" SERVER_IP="" KEY="" IFACE="" MAC=""
-FORWARD_LISTEN="" FORWARD_TARGET=""
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --role)        ROLE="$2";         shift 2 ;;
-    --ip)          IP="$2";           shift 2 ;;
-    --port)        PORT="$2";         shift 2 ;;
-    --client-port) CLIENT_PORT="$2";  shift 2 ;;
-    --server-ip)   SERVER_IP="$2";    shift 2 ;;
-    --key)         KEY="$2";          shift 2 ;;
-    --iface)       IFACE="$2";        shift 2 ;;
-    --mac)         MAC="$2";          shift 2 ;;
-    --forward)     FORWARD_LISTEN="$2"; FORWARD_TARGET="$3"; shift 3 ;;
-    *)             warn "Unknown arg: $1"; shift ;;
-  esac
-done
-
-# ─── Interactive prompts (if args not given) ─────────────────────────────────
-# When piped via curl|bash, stdin is the pipe. We must read from /dev/tty.
-if [[ -t 0 ]]; then
-  TTY_IN="/dev/stdin"
+# ─── Parse positional args ───────────────────────────────────────────────────
+# server KEY
+# client SERVER_IP KEY
+ROLE="${1:-}"
+if [[ "${ROLE}" == "server" ]]; then
+  KEY="${2:-${KEY:-}}"
+  [[ -n "${KEY}" ]] || die "Usage: ... | bash -s -- server KEY"
+elif [[ "${ROLE}" == "client" ]]; then
+  SERVER_IP="${2:-${SERVER_IP:-}}"
+  KEY="${3:-${KEY:-}}"
+  [[ -n "${SERVER_IP}" && -n "${KEY}" ]] || die "Usage: ... | bash -s -- client SERVER_IP KEY"
 else
-  TTY_IN="/dev/tty"
+  echo ""
+  printf "${CYAN}paqet ${VERSION} Installer${NC}\n"
+  echo ""
+  echo "Usage:"
+  echo "  Server:  curl -sL URL | bash -s -- server YOUR_KEY"
+  echo "  Client:  curl -sL URL | bash -s -- client SERVER_IP YOUR_KEY"
+  echo ""
+  echo "Example:"
+  echo "  curl -sL https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts/paqet-install | bash -s -- server mysecretkey123"
+  echo "  curl -sL https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts/paqet-install | bash -s -- client 167.235.152.44 mysecretkey123"
+  echo ""
+  die "First argument must be 'server' or 'client'"
 fi
 
-prompt_value() {
-  local varname="$1" prompt="$2" default="$3"
-  eval "local current=\${$varname}"
-  if [[ -n "${current}" ]]; then return; fi
-  if [[ -n "${default}" ]]; then
-    ask "${prompt} [${default}]: " >/dev/tty
-    read -r val <"${TTY_IN}"
-    val="${val:-${default}}"
-  else
-    ask "${prompt}: " >/dev/tty
-    read -r val <"${TTY_IN}"
+# ─── Auto-detect everything ──────────────────────────────────────────────────
+info "Detecting network settings ..."
+
+# Interface
+IFACE="${IFACE:-$(ip -o route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')}"
+[[ -n "${IFACE}" ]] || die "Cannot detect network interface. Set IFACE= env var"
+
+# IP
+IP="${IP:-$(ip -4 addr show "${IFACE}" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')}"
+[[ -n "${IP}" ]] || die "Cannot detect IP on ${IFACE}. Set IP= env var"
+
+# Gateway MAC
+if [[ -z "${MAC:-}" ]]; then
+  GW_IP="$(ip route show default dev "${IFACE}" 2>/dev/null | awk '{print $3; exit}')"
+  if [[ -n "${GW_IP}" ]]; then
+    # Ping gateway to make sure ARP entry exists
+    ping -c1 -W1 "${GW_IP}" >/dev/null 2>&1 || true
+    MAC="$(ip neigh show "${GW_IP}" dev "${IFACE}" 2>/dev/null | awk '{print $5; exit}')"
   fi
-  if [[ -z "${val}" ]]; then
-    error "Value required for: ${prompt}"
-    exit 1
-  fi
-  eval "${varname}='${val}'"
-}
-
-if [[ -z "${ROLE}" ]]; then
-  {
-    echo ""
-    printf "${CYAN}╔══════════════════════════════════════════╗${NC}\n"
-    printf "${CYAN}║     paqet ${VERSION} Installer              ║${NC}\n"
-    printf "${CYAN}╚══════════════════════════════════════════╝${NC}\n"
-    echo ""
-  } >/dev/tty
 fi
+[[ -n "${MAC:-}" ]] || die "Cannot detect gateway MAC. Set MAC= env var"
 
-prompt_value ROLE "Role (server / client)" ""
+# Ports
+PORT="${PORT:-9999}"
+CLIENT_PORT="${CLIENT_PORT:-20000}"
 
-if [[ "${ROLE}" != "server" && "${ROLE}" != "client" ]]; then
-  error "Role must be 'server' or 'client'"
-  exit 1
-fi
-
-# Auto-detect interface
-if [[ -z "${IFACE}" ]]; then
-  DEFAULT_IFACE="$(ip -o route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' || true)"
-  prompt_value IFACE "Network interface" "${DEFAULT_IFACE}"
-fi
-
-# Auto-detect MAC
-if [[ -z "${MAC}" ]]; then
-  DEFAULT_MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | awk '/REACHABLE|STALE|DELAY/{print $5; exit}' || true)"
-  if [[ -z "${DEFAULT_MAC}" ]]; then
-    DEFAULT_MAC="$(ip route show default dev "${IFACE}" 2>/dev/null | awk '{print $3}' | head -1 || true)"
-    if [[ -n "${DEFAULT_MAC}" ]]; then
-      DEFAULT_MAC="$(ip neigh show "${DEFAULT_MAC}" dev "${IFACE}" 2>/dev/null | awk '{print $5; exit}' || true)"
-    fi
-  fi
-  prompt_value MAC "Gateway MAC address" "${DEFAULT_MAC}"
-fi
-
-# Auto-detect IP
-if [[ -z "${IP}" ]]; then
-  DEFAULT_IP="$(ip -4 addr show "${IFACE}" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}' || true)"
-  prompt_value IP "This server's public IP" "${DEFAULT_IP}"
-fi
-
-prompt_value KEY "Encryption key (shared secret)" ""
-
+info "  Interface : ${IFACE}"
+info "  IP        : ${IP}"
+info "  MAC       : ${MAC}"
+info "  Role      : ${ROLE}"
 if [[ "${ROLE}" == "client" ]]; then
-  prompt_value SERVER_IP "Kharej (server) IP address" ""
-  prompt_value CLIENT_PORT "Client local port" "20000"
-  prompt_value PORT "Server port" "9999"
-  if [[ -z "${FORWARD_LISTEN}" ]]; then
-    FORWARD_LISTEN="0.0.0.0:443"
-    FORWARD_TARGET="127.0.0.1:2443"
-  fi
-else
-  prompt_value PORT "Listen port" "9999"
+  info "  Server    : ${SERVER_IP}:${PORT}"
 fi
 
 # ─── Download binary ─────────────────────────────────────────────────────────
@@ -150,7 +104,7 @@ ARCH="$(uname -m)"
 case "${ARCH}" in
   x86_64|amd64)  ASSET_TAR="paqet-linux-amd64.tar.gz"; BIN_TAR="paqet_linux_amd64" ;;
   aarch64|arm64)  ASSET_TAR="paqet-linux-arm64.tar.gz"; BIN_TAR="paqet_linux_arm64" ;;
-  *) error "Unsupported arch: ${ARCH}"; exit 1 ;;
+  *) die "Unsupported arch: ${ARCH}" ;;
 esac
 
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET_TAR}"
@@ -159,11 +113,10 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 
 curl -fsSL "${URL}" -o "${TMP_DIR}/paqet.tar.gz"
 tar xzf "${TMP_DIR}/paqet.tar.gz" -C "${TMP_DIR}"
+[[ -f "${TMP_DIR}/${BIN_TAR}" ]] || die "Binary not found in tarball"
 
-if [[ ! -f "${TMP_DIR}/${BIN_TAR}" ]]; then
-  error "Binary not found in tarball: ${BIN_TAR}"
-  exit 1
-fi
+# Stop existing service before replacing binary
+systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
 
 install -m 0755 "${TMP_DIR}/${BIN_TAR}" "${BIN_DIR}/paqet"
 info "Binary installed: ${BIN_DIR}/paqet"
@@ -172,14 +125,12 @@ info "Binary installed: ${BIN_DIR}/paqet"
 info "Installing helper scripts ..."
 mkdir -p "${LIB_DIR}"
 
-# Download scripts from repo
-SCRIPTS_URL="https://raw.githubusercontent.com/${REPO}/main/scripts"
+SCRIPTS_URL="https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts"
 for script in paqet-iptables.sh paqet-systemd-iptables.sh; do
   curl -fsSL "${SCRIPTS_URL}/${script}" -o "${LIB_DIR}/${script}"
   chmod +x "${LIB_DIR}/${script}"
 done
 
-# Also install paqet-update
 curl -fsSL "${SCRIPTS_URL}/paqet-update" -o "${BIN_DIR}/paqet-update"
 chmod +x "${BIN_DIR}/paqet-update"
 
@@ -189,20 +140,14 @@ mkdir -p "${CONF_DIR}"
 
 if [[ "${ROLE}" == "server" ]]; then
 cat > "${CONF_FILE}" <<YAML
-# paqet ${VERSION} — production server config
-# Generated by paqet-install on $(date -u +%Y-%m-%dT%H:%M:%SZ)
 role: "server"
-
 log:
   level: "warn"
-
 debug:
   pprof: "127.0.0.1:6060"
   diag: true
-
 listen:
   addr: ":${PORT}"
-
 network:
   interface: "${IFACE}"
   dscp: 0
@@ -215,7 +160,6 @@ network:
     promisc: false
     immediate: true
     timeout_ms: 0
-
 transport:
   protocol: "kcp"
   conn: 10
@@ -237,17 +181,12 @@ YAML
 
 else
 cat > "${CONF_FILE}" <<YAML
-# paqet ${VERSION} — production client config
-# Generated by paqet-install on $(date -u +%Y-%m-%dT%H:%M:%SZ)
 role: "client"
-
 log:
   level: "warn"
-
 debug:
   pprof: "127.0.0.1:6060"
   diag: true
-
 network:
   interface: "${IFACE}"
   dscp: 0
@@ -260,10 +199,8 @@ network:
     promisc: false
     immediate: true
     timeout_ms: 0
-
 server:
   addr: "${SERVER_IP}:${PORT}"
-
 transport:
   protocol: "kcp"
   conn: 10
@@ -278,10 +215,9 @@ transport:
     guard_magic: "PQT1"
     smuxbuf: 16777216
     streambuf: 4194304
-
 forward:
-  - listen: "${FORWARD_LISTEN}"
-    target: "${FORWARD_TARGET}"
+  - listen: "0.0.0.0:443"
+    target: "127.0.0.1:2443"
     protocol: "tcp"
   - listen: "127.0.0.1:5555"
     target: "127.0.0.1:5555"
@@ -322,28 +258,20 @@ systemctl daemon-reload
 # ─── Start service ───────────────────────────────────────────────────────────
 info "Starting paqet ..."
 systemctl enable "${SERVICE_NAME}" --now 2>/dev/null || true
-sleep 1
+sleep 2
 
 if systemctl is-active --quiet "${SERVICE_NAME}"; then
   info "paqet is running!"
 else
-  warn "Service not active yet. Check: journalctl -u paqet -f"
+  warn "Service not active. Check: journalctl -u paqet -f"
 fi
 
-# ─── Summary ─────────────────────────────────────────────────────────────────
+# ─── Done ────────────────────────────────────────────────────────────────────
 echo ""
-printf "${GREEN}╔══════════════════════════════════════════╗${NC}\n"
-printf "${GREEN}║          Installation Complete!           ║${NC}\n"
-printf "${GREEN}╚══════════════════════════════════════════╝${NC}\n"
-echo ""
-info "Version:  $("${BIN_DIR}/paqet" version 2>/dev/null || echo "${VERSION}")"
-info "Config:   ${CONF_FILE}"
-info "Service:  systemctl status ${SERVICE_NAME}"
-info "Logs:     journalctl -u ${SERVICE_NAME} -f"
-echo ""
-info "Useful commands:"
-echo "  paqet status                    # check tunnel status"
-echo "  systemctl restart paqet         # restart"
-echo "  nano /etc/paqet/config.yaml     # edit config"
-echo "  paqet-update ${VERSION}              # update binary"
+printf "${GREEN}══════════════════════════════════════════${NC}\n"
+info "Version : $("${BIN_DIR}/paqet" version 2>/dev/null || echo "${VERSION}")"
+info "Config  : ${CONF_FILE}"
+info "Status  : systemctl status paqet"
+info "Logs    : journalctl -u paqet -f"
+printf "${GREEN}══════════════════════════════════════════${NC}\n"
 echo ""
