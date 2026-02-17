@@ -4,14 +4,13 @@ set -euo pipefail
 ###############################################################################
 # paqet-install  —  one-command installer for paqet v0.1.28
 #
-# Server:
-#   curl -sL URL | bash -s -- server IP MAC KEY
-#   curl -sL URL | bash -s -- server IP MAC KEY [IFACE] [PORT]
+# Server (Kharej):
+#   curl -sL URL | bash -s -- server KEY
 #
-# Client:
-#   curl -sL URL | bash -s -- client IP MAC SERVER_IP KEY
-#   curl -sL URL | bash -s -- client IP MAC SERVER_IP KEY [IFACE] [PORT]
+# Client (Iran):
+#   curl -sL URL | bash -s -- client SERVER_IP KEY
 #
+# IP, MAC, interface are auto-detected. No questions asked.
 ###############################################################################
 
 VERSION="v0.1.28"
@@ -23,8 +22,8 @@ CONF_FILE="${CONF_DIR}/config.yaml"
 SERVICE_FILE="/etc/systemd/system/paqet.service"
 SERVICE_NAME="paqet"
 
-RED='\033[0;31m'
 GREEN='\033[0;32m'
+RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
@@ -32,7 +31,6 @@ info()  { printf "${GREEN}[+]${NC} %s\n" "$*"; }
 error() { printf "${RED}[✗]${NC} %s\n" "$*" >&2; }
 die()   { error "$*"; exit 1; }
 
-# ─── Root check ──────────────────────────────────────────────────────────────
 [[ "${EUID}" -eq 0 ]] || die "Run as root"
 
 # ─── Parse args ──────────────────────────────────────────────────────────────
@@ -40,72 +38,52 @@ ROLE="${1:-}"
 URL_BASE="https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts/paqet-install"
 
 if [[ "${ROLE}" == "server" ]]; then
-  # server IP MAC KEY [IFACE] [PORT]
-  IP="${2:-}"; MAC="${3:-}"; KEY="${4:-}"
-  IFACE="${5:-eth0}"; PORT="${6:-9999}"
-  [[ -n "${IP}" && -n "${MAC}" && -n "${KEY}" ]] || {
-    echo ""
-    echo "Usage:  curl -sL URL | bash -s -- server IP MAC KEY [IFACE] [PORT]"
-    echo ""
-    echo "  IP     = this server's public IP"
-    echo "  MAC    = gateway MAC  (run: ip neigh | head)"
-    echo "  KEY    = shared encryption key"
-    echo "  IFACE  = network interface (default: eth0)    (run: ip link show)"
-    echo "  PORT   = listen port (default: 9999)"
-    echo ""
-    echo "Example:"
-    echo "  curl -sL ${URL_BASE} | bash -s -- server 167.235.152.44 d2:74:7f:6e:37:e3 mykey123"
-    echo ""
-    die "Missing required arguments"
-  }
+  KEY="${2:-}"
+  [[ -n "${KEY}" ]] || { echo "Usage: curl -sL URL | bash -s -- server KEY"; die "Missing KEY"; }
 
 elif [[ "${ROLE}" == "client" ]]; then
-  # client IP MAC SERVER_IP KEY [IFACE] [PORT]
-  IP="${2:-}"; MAC="${3:-}"; SERVER_IP="${4:-}"; KEY="${5:-}"
-  IFACE="${6:-ens3}"; PORT="${7:-9999}"
-  CLIENT_PORT="20000"
-  [[ -n "${IP}" && -n "${MAC}" && -n "${SERVER_IP}" && -n "${KEY}" ]] || {
-    echo ""
-    echo "Usage:  curl -sL URL | bash -s -- client IP MAC SERVER_IP KEY [IFACE] [PORT]"
-    echo ""
-    echo "  IP        = this server's public IP (Iran)"
-    echo "  MAC       = gateway MAC  (run: ip neigh | head)"
-    echo "  SERVER_IP = Kharej server IP"
-    echo "  KEY       = shared encryption key"
-    echo "  IFACE     = network interface (default: ens3)   (run: ip link show)"
-    echo "  PORT      = server port (default: 9999)"
-    echo ""
-    echo "Example:"
-    echo "  curl -sL ${URL_BASE} | bash -s -- client 78.157.36.135 24:e9:b3:9d:cc:fc 167.235.152.44 mykey123"
-    echo ""
-    die "Missing required arguments"
-  }
+  SERVER_IP="${2:-}"; KEY="${3:-}"
+  [[ -n "${SERVER_IP}" && -n "${KEY}" ]] || { echo "Usage: curl -sL URL | bash -s -- client SERVER_IP KEY"; die "Missing SERVER_IP or KEY"; }
 
 else
-  echo ""
-  printf "${CYAN}paqet ${VERSION} Installer${NC}\n"
-  echo ""
-  echo "Server:"
-  echo "  curl -sL ${URL_BASE} | bash -s -- server IP MAC KEY"
-  echo ""
-  echo "Client:"
-  echo "  curl -sL ${URL_BASE} | bash -s -- client IP MAC SERVER_IP KEY"
-  echo ""
-  echo "To find your values:"
-  echo "  IP    :  hostname -I | awk '{print \$1}'"
-  echo "  MAC   :  ip neigh | head"
-  echo "  IFACE :  ip link show"
+  printf "${CYAN}paqet ${VERSION} Installer${NC}\n\n"
+  echo "Server:  curl -sL ${URL_BASE} | bash -s -- server KEY"
+  echo "Client:  curl -sL ${URL_BASE} | bash -s -- client SERVER_IP KEY"
   echo ""
   die "First argument must be 'server' or 'client'"
 fi
 
-info "Role      : ${ROLE}"
-info "IP        : ${IP}"
-info "MAC       : ${MAC}"
-info "Interface : ${IFACE}"
-if [[ "${ROLE}" == "client" ]]; then
-  info "Server    : ${SERVER_IP}:${PORT}"
+PORT="9999"
+CLIENT_PORT="20000"
+
+# ─── Auto-detect (silent, no prompts) ────────────────────────────────────────
+# Interface: the one used for default route
+IFACE="$(ip -o route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')" || true
+[[ -n "${IFACE}" ]] || die "Cannot detect interface. Check: ip route"
+
+# IP: primary address on that interface
+IP="$(ip -4 addr show "${IFACE}" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')" || true
+[[ -n "${IP}" ]] || die "Cannot detect IP on ${IFACE}. Check: ip addr show ${IFACE}"
+
+# Gateway MAC: find gateway IP, ping it to populate ARP, then read
+GW_IP="$(ip route show default 2>/dev/null | awk '/via/{print $3; exit}')" || true
+if [[ -n "${GW_IP}" ]]; then
+  # Populate ARP cache
+  ping -c1 -W2 "${GW_IP}" >/dev/null 2>&1 || true
+  sleep 1
 fi
+# Try multiple methods to get MAC
+MAC="$(ip neigh show "${GW_IP}" dev "${IFACE}" 2>/dev/null | awk '{print $5; exit}')" || true
+if [[ -z "${MAC}" ]]; then
+  MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | awk 'NF>=5{print $5; exit}')" || true
+fi
+if [[ -z "${MAC}" ]]; then
+  # Try arp command as fallback
+  MAC="$(arp -n -i "${IFACE}" 2>/dev/null | awk 'NR>1{print $3; exit}')" || true
+fi
+[[ -n "${MAC}" ]] || die "Cannot detect gateway MAC. Check: ip neigh show dev ${IFACE}"
+
+info "Detected: ${IFACE} / ${IP} / ${MAC}"
 
 # ─── Download binary ─────────────────────────────────────────────────────────
 info "Downloading paqet ${VERSION} ..."
@@ -129,19 +107,19 @@ systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
 install -m 0755 "${TMP_DIR}/${BIN_TAR}" "${BIN_DIR}/paqet"
 info "Binary installed"
 
-# ─── Install helper scripts ─────────────────────────────────────────────────
+# ─── Helper scripts ──────────────────────────────────────────────────────────
 info "Installing scripts ..."
 mkdir -p "${LIB_DIR}"
 
 SCRIPTS_URL="https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts"
-for script in paqet-iptables.sh paqet-systemd-iptables.sh; do
-  curl -fsSL "${SCRIPTS_URL}/${script}" -o "${LIB_DIR}/${script}"
-  chmod +x "${LIB_DIR}/${script}"
+for s in paqet-iptables.sh paqet-systemd-iptables.sh; do
+  curl -fsSL "${SCRIPTS_URL}/${s}" -o "${LIB_DIR}/${s}"
+  chmod +x "${LIB_DIR}/${s}"
 done
 curl -fsSL "${SCRIPTS_URL}/paqet-update" -o "${BIN_DIR}/paqet-update"
 chmod +x "${BIN_DIR}/paqet-update"
 
-# ─── Generate config ─────────────────────────────────────────────────────────
+# ─── Config ──────────────────────────────────────────────────────────────────
 info "Generating config ..."
 mkdir -p "${CONF_DIR}"
 
@@ -266,7 +244,7 @@ sleep 2
 if systemctl is-active --quiet "${SERVICE_NAME}"; then
   info "paqet is running!"
 else
-  error "Service not active. Check: journalctl -u paqet -f"
+  error "Not active. Check: journalctl -u paqet -f"
 fi
 
 echo ""
