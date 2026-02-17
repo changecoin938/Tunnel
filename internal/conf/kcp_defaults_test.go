@@ -6,27 +6,18 @@ func TestPickKCPWindow(t *testing.T) {
 	cases := []struct {
 		memMB     int
 		connCount int
-		want      int
 	}{
-		{memMB: 0, connCount: 1, want: 0},
-		{memMB: -1, connCount: 1, want: 0},
-		{memMB: 1024, connCount: 1, want: 2048},
-		{memMB: 4095, connCount: 1, want: 2048},
-		{memMB: 4096, connCount: 1, want: 4096},
-		{memMB: 8191, connCount: 1, want: 4096},
-		{memMB: 8192, connCount: 1, want: 8192},
-		{memMB: 16383, connCount: 1, want: 8192},
-		{memMB: 16384, connCount: 1, want: 16384},
-		{memMB: 16384, connCount: 16, want: 8192},
-		{memMB: 16384, connCount: 32, want: 4096},
-		{memMB: 9000, connCount: 32, want: 4096},
-		{memMB: 9000, connCount: 0, want: 8192}, // connCount<1 treated as 1
+		{memMB: 0, connCount: 1},
+		{memMB: -1, connCount: 1},
+		{memMB: 1024, connCount: 1},
+		{memMB: 16384, connCount: 32},
+		{memMB: 9000, connCount: 0},
 	}
 
 	for _, tc := range cases {
 		got := pickKCPWindow(tc.memMB, tc.connCount)
-		if got != tc.want {
-			t.Fatalf("pickKCPWindow(memMB=%d, conn=%d)=%d, want %d", tc.memMB, tc.connCount, got, tc.want)
+		if got != 8192 {
+			t.Fatalf("pickKCPWindow(memMB=%d, conn=%d)=%d, want 8192", tc.memMB, tc.connCount, got)
 		}
 	}
 }
@@ -35,62 +26,34 @@ func TestPickSmuxBuf(t *testing.T) {
 	cases := []struct {
 		memMB        int
 		sessionCount int
-		want         int
 	}{
-		{memMB: 0, sessionCount: 1024, want: 0},
-		{memMB: 1024, sessionCount: 256, want: 1 * 1024 * 1024},   // 25% of 1GB / 256 = 1MB
-		{memMB: 4096, sessionCount: 1024, want: 1 * 1024 * 1024},  // 25% of 4GB / 1024 = 1MB
-		{memMB: 4096, sessionCount: 512, want: 2 * 1024 * 1024},   // 25% of 4GB / 512 = 2MB
-		{memMB: 16384, sessionCount: 1024, want: 4 * 1024 * 1024}, // 25% of 16GB / 1024 = 4MB
-		{memMB: 32768, sessionCount: 1024, want: 4 * 1024 * 1024}, // clamped (would be 8MB)
-		{memMB: 4096, sessionCount: 1, want: 4 * 1024 * 1024},     // clamped (would be 1GB)
-		{memMB: 1024, sessionCount: 1024, want: 256 * 1024},       // clamped (would be 256KB)
-		{memMB: 1024, sessionCount: 10_000_000, want: 256 * 1024}, // clamped min
-		{memMB: 4096, sessionCount: 10_000_000, want: 256 * 1024}, // clamped min
-		{memMB: 4096, sessionCount: 10_000_000, want: 256 * 1024}, // clamped min (duplicate intentional)
+		{memMB: 0, sessionCount: 1024},
+		{memMB: 1024, sessionCount: 256},
+		{memMB: 4096, sessionCount: 1},
+		{memMB: 1024, sessionCount: 10_000_000},
 	}
 	for _, tc := range cases {
 		got := pickSmuxBuf(tc.memMB, tc.sessionCount)
-		if got != tc.want {
-			t.Fatalf("pickSmuxBuf(memMB=%d, sessions=%d)=%d, want %d", tc.memMB, tc.sessionCount, got, tc.want)
+		if got != 16*1024*1024 {
+			t.Fatalf("pickSmuxBuf(memMB=%d, sessions=%d)=%d, want %d", tc.memMB, tc.sessionCount, got, 16*1024*1024)
 		}
 	}
 }
 
 func TestPickStreamBuf(t *testing.T) {
-	cases := []struct {
-		memMB int
-		want  int
-	}{
-		{memMB: 0, want: 0},
-		{memMB: 1024, want: 128 * 1024},
-		{memMB: 16383, want: 128 * 1024},
-		{memMB: 16384, want: 256 * 1024},
-	}
-	for _, tc := range cases {
-		got := pickStreamBuf(tc.memMB)
-		if got != tc.want {
-			t.Fatalf("pickStreamBuf(memMB=%d)=%d, want %d", tc.memMB, got, tc.want)
+	for _, memMB := range []int{0, 1024, 16384} {
+		got := pickStreamBuf(memMB)
+		if got != 4*1024*1024 {
+			t.Fatalf("pickStreamBuf(memMB=%d)=%d, want %d", memMB, got, 4*1024*1024)
 		}
 	}
 }
 
 func TestPickMaxSessions(t *testing.T) {
-	cases := []struct {
-		memMB int
-		want  int
-	}{
-		{memMB: 0, want: 0},
-		{memMB: 1024, want: 256},
-		{memMB: 2047, want: 256},
-		{memMB: 2048, want: 512},
-		{memMB: 4095, want: 512},
-		{memMB: 4096, want: 1024},
-	}
-	for _, tc := range cases {
-		got := pickMaxSessions(tc.memMB)
-		if got != tc.want {
-			t.Fatalf("pickMaxSessions(memMB=%d)=%d, want %d", tc.memMB, got, tc.want)
+	for _, memMB := range []int{0, 1024, 4096} {
+		got := pickMaxSessions(memMB)
+		if got != 128 {
+			t.Fatalf("pickMaxSessions(memMB=%d)=%d, want 128", memMB, got)
 		}
 	}
 }
@@ -99,40 +62,24 @@ func TestPickMaxStreamsTotal(t *testing.T) {
 	cases := []struct {
 		memMB     int
 		streamBuf int
-		want      int
 	}{
-		{memMB: 0, streamBuf: 128 * 1024, want: 0},
-		{memMB: 1024, streamBuf: 128 * 1024, want: 2048},   // 256MB / 128KB
-		{memMB: 4096, streamBuf: 128 * 1024, want: 8192},   // 1GB / 128KB
-		{memMB: 8192, streamBuf: 128 * 1024, want: 16384},  // 2GB / 128KB
-		{memMB: 16384, streamBuf: 128 * 1024, want: 32768}, // 4GB / 128KB
-		{memMB: 32768, streamBuf: 128 * 1024, want: 65536}, // 8GB / 128KB (cap)
+		{memMB: 0, streamBuf: 128 * 1024},
+		{memMB: 1024, streamBuf: 128 * 1024},
+		{memMB: 16384, streamBuf: 4 * 1024 * 1024},
 	}
 	for _, tc := range cases {
 		got := pickMaxStreamsTotal(tc.memMB, tc.streamBuf)
-		if got != tc.want {
-			t.Fatalf("pickMaxStreamsTotal(memMB=%d, streamBuf=%d)=%d, want %d", tc.memMB, tc.streamBuf, got, tc.want)
+		if got != 16384 {
+			t.Fatalf("pickMaxStreamsTotal(memMB=%d, streamBuf=%d)=%d, want 16384", tc.memMB, tc.streamBuf, got)
 		}
 	}
 }
 
 func TestPickMaxStreamsPerSession(t *testing.T) {
-	cases := []struct {
-		maxStreamsTotal int
-		want            int
-	}{
-		{maxStreamsTotal: 0, want: 0},
-		{maxStreamsTotal: 1024, want: 256},   // min clamp
-		{maxStreamsTotal: 4096, want: 256},   // 4096/16 = 256
-		{maxStreamsTotal: 8192, want: 512},   // 8192/16 = 512
-		{maxStreamsTotal: 16384, want: 1024}, // 16384/16 = 1024
-		{maxStreamsTotal: 65536, want: 4096}, // 65536/16 = 4096 (cap)
-		{maxStreamsTotal: 1_000_000, want: 4096},
-	}
-	for _, tc := range cases {
-		got := pickMaxStreamsPerSession(tc.maxStreamsTotal)
-		if got != tc.want {
-			t.Fatalf("pickMaxStreamsPerSession(total=%d)=%d, want %d", tc.maxStreamsTotal, got, tc.want)
+	for _, total := range []int{0, 1024, 16384, 1_000_000} {
+		got := pickMaxStreamsPerSession(total)
+		if got != 4096 {
+			t.Fatalf("pickMaxStreamsPerSession(total=%d)=%d, want 4096", total, got)
 		}
 	}
 }

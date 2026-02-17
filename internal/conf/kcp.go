@@ -125,123 +125,28 @@ func (k *KCP) setDefaults(role string, _ int) {
 	}
 }
 
-func pickKCPWindow(memMB int, connCount int) int {
-	// Mirrors the heuristic used in scripts/paqet-ui:
-	// - Scale window with RAM (larger window => higher BDP throughput)
-	// - Cap per-session window when running many sessions (transport.conn)
-	if connCount < 1 {
-		connCount = 1
-	}
-	if memMB <= 0 {
-		return 0
-	}
-
-	wnd := 0
-	switch {
-	case memMB < 4096:
-		wnd = 2048
-	case memMB < 8192:
-		wnd = 4096
-	case memMB < 16384:
-		wnd = 8192
-	default:
-		wnd = 16384
-	}
-
-	if connCount >= 16 && wnd > 8192 {
-		wnd = 8192
-	}
-	if connCount >= 32 && wnd > 4096 {
-		wnd = 4096
-	}
-	return wnd
+func pickKCPWindow(_, _ int) int {
+	return 8192
 }
 
-func pickMaxSessions(memMB int) int {
-	if memMB <= 0 {
-		return 0
-	}
-	switch {
-	case memMB < 2048:
-		return 256
-	case memMB < 4096:
-		return 512
-	default:
-		return 1024
-	}
+func pickMaxSessions(_ int) int {
+	return 128
 }
 
-func pickSmuxBuf(memMB int, sessionCount int) int {
-	if memMB <= 0 || sessionCount < 1 {
-		return 0
-	}
-
-	// Budget: up to 25% of RAM total for smux receive buffers.
-	// MaxReceiveBuffer is a cap, not a pre-allocation, but in worst-case DoS it
-	// can get close, so keep it bounded.
-	budgetBytes := int64(memMB) * 1024 * 1024 / 4
-	per := budgetBytes / int64(sessionCount)
-
-	const (
-		min = 256 * 1024
-		max = 4 * 1024 * 1024
-	)
-	if per < min {
-		per = min
-	}
-	if per > max {
-		per = max
-	}
-	return int(per)
+func pickSmuxBuf(_, _ int) int {
+	return 16 * 1024 * 1024
 }
 
-func pickStreamBuf(memMB int) int {
-	if memMB <= 0 {
-		return 0
-	}
-	// Keep conservative for high-concurrency VPN workloads; larger buffers can
-	// amplify memory usage when many streams stall.
-	if memMB < 16384 {
-		return 128 * 1024
-	}
-	return 256 * 1024
+func pickStreamBuf(_ int) int {
+	return 4 * 1024 * 1024
 }
 
-func pickMaxStreamsTotal(memMB int, streamBuf int) int {
-	if memMB <= 0 || streamBuf < 1 {
-		return 0
-	}
-
-	// Budget: up to 25% of RAM for worst-case per-stream buffering. This is a
-	// hard upper bound against stream fan-out OOM.
-	budgetBytes := int64(memMB) * 1024 * 1024 / 4
-	max := int(budgetBytes / int64(streamBuf))
-
-	if max < 1024 {
-		max = 1024
-	}
-	if max > 65536 {
-		max = 65536
-	}
-	return max
+func pickMaxStreamsTotal(_, _ int) int {
+	return 16384
 }
 
-func pickMaxStreamsPerSession(maxStreamsTotal int) int {
-	if maxStreamsTotal <= 0 {
-		return 0
-	}
-
-	per := maxStreamsTotal / 16
-	if per < 256 {
-		per = 256
-	}
-	if per > 4096 {
-		per = 4096
-	}
-	if per > maxStreamsTotal {
-		per = maxStreamsTotal
-	}
-	return per
+func pickMaxStreamsPerSession(_ int) int {
+	return 4096
 }
 
 func (k *KCP) validate() []error {
