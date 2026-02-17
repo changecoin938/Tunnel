@@ -144,3 +144,36 @@ func TestKCPSetDefaults_BlockDefaultsToAES128GCM(t *testing.T) {
 		t.Fatalf("expected default block aes-128-gcm, got %q", k.Block_)
 	}
 }
+
+func TestKCPSetDefaults_AlignWithUIClient(t *testing.T) {
+	var k KCP
+	k.setDefaults("client", 10)
+
+	if k.Mode != "fast3" {
+		t.Fatalf("expected mode fast3, got %q", k.Mode)
+	}
+	if k.Rcvwnd != 8192 || k.Sndwnd != 8192 {
+		t.Fatalf("expected window defaults 8192/8192, got %d/%d", k.Rcvwnd, k.Sndwnd)
+	}
+	if k.Smuxbuf != 16*1024*1024 {
+		t.Fatalf("expected smuxbuf 16MiB, got %d", k.Smuxbuf)
+	}
+	if k.Streambuf != 4*1024*1024 {
+		t.Fatalf("expected streambuf 4MiB, got %d", k.Streambuf)
+	}
+}
+
+func TestKCPSetDefaults_AlignWithUIServerLimits(t *testing.T) {
+	var k KCP
+	k.setDefaults("server", 10)
+
+	if k.MaxSessions != 128 {
+		t.Fatalf("expected max_sessions 128, got %d", k.MaxSessions)
+	}
+	if k.MaxStreamsTotal != 16384 {
+		t.Fatalf("expected max_streams_total 16384, got %d", k.MaxStreamsTotal)
+	}
+	if k.MaxStreamsPerSession != 4096 {
+		t.Fatalf("expected max_streams_per_session 4096, got %d", k.MaxStreamsPerSession)
+	}
+}

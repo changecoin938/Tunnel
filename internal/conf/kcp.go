@@ -52,34 +52,19 @@ type KCP struct {
 	Block kcp.BlockCrypt `yaml:"-"`
 }
 
-func (k *KCP) setDefaults(role string, connCount int) {
-	memMB := totalMemMB()
-	wnd := pickKCPWindow(memMB, connCount)
-
+func (k *KCP) setDefaults(role string, _ int) {
 	if k.Mode == "" {
-		k.Mode = "fast2"
+		k.Mode = "fast3"
 	}
 	if k.MTU == 0 {
 		k.MTU = 1350
 	}
 
 	if k.Rcvwnd == 0 {
-		if wnd > 0 {
-			k.Rcvwnd = wnd
-		} else if role == "server" {
-			k.Rcvwnd = 2048
-		} else {
-			k.Rcvwnd = 512
-		}
+		k.Rcvwnd = 8192
 	}
 	if k.Sndwnd == 0 {
-		if wnd > 0 {
-			k.Sndwnd = wnd
-		} else if role == "server" {
-			k.Sndwnd = 2048
-		} else {
-			k.Sndwnd = 512
-		}
+		k.Sndwnd = 8192
 	}
 
 	// if k.Dshard == 0 {
@@ -112,57 +97,27 @@ func (k *KCP) setDefaults(role string, connCount int) {
 		k.HeaderTimeout = 10
 	}
 
-	// Defensive defaults for servers. Use -1 in config to disable limits.
+	// Match UI/examples defaults for server-side limits.
 	if role == "server" {
 		if k.MaxSessions == 0 {
-			if ms := pickMaxSessions(memMB); ms > 0 {
-				k.MaxSessions = ms
-			} else {
-				k.MaxSessions = 1024
-			}
+			k.MaxSessions = 128
 		}
 	}
 
 	if k.Smuxbuf == 0 {
-		sessionCount := connCount
-		if role == "server" && k.MaxSessions > 0 {
-			sessionCount = k.MaxSessions
-		}
-		if sb := pickSmuxBuf(memMB, sessionCount); sb > 0 {
-			k.Smuxbuf = sb
-		} else {
-			k.Smuxbuf = 4 * 1024 * 1024
-		}
+		k.Smuxbuf = 16 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		if sb := pickStreamBuf(memMB); sb > 0 {
-			k.Streambuf = sb
-		} else {
-			// Keep conservative for high-concurrency (500-1000 users). Each user opens
-			// many streams (browser tabs, apps), so 25k+ streams are common. With 4GB
-			// RAM, 128KB per stream keeps memory manageable while providing adequate
-			// per-stream throughput for web browsing / messaging workloads.
-			k.Streambuf = 128 * 1024
-		}
+		k.Streambuf = 4 * 1024 * 1024
 	}
 
-	// Defensive defaults for servers. Use -1 in config to disable limits.
-	// These limits should scale with RAM to avoid a single server OOM'ing under
-	// stream fan-out and to reduce DoS impact.
+	// Match UI/examples defaults for server-side limits.
 	if role == "server" {
 		if k.MaxStreamsTotal == 0 {
-			if ms := pickMaxStreamsTotal(memMB, k.Streambuf); ms > 0 {
-				k.MaxStreamsTotal = ms
-			} else {
-				k.MaxStreamsTotal = 65536
-			}
+			k.MaxStreamsTotal = 16384
 		}
 		if k.MaxStreamsPerSession == 0 {
-			if ms := pickMaxStreamsPerSession(k.MaxStreamsTotal); ms > 0 {
-				k.MaxStreamsPerSession = ms
-			} else {
-				k.MaxStreamsPerSession = 32768
-			}
+			k.MaxStreamsPerSession = 4096
 		}
 		if k.MaxStreamsPerSession > k.MaxStreamsTotal && k.MaxStreamsTotal > 0 {
 			k.MaxStreamsPerSession = k.MaxStreamsTotal
