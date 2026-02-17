@@ -47,7 +47,7 @@ func copyWithWriteRetry(dst io.Writer, src io.Reader, pool *sync.Pool) (int64, e
 		WriteTo(io.Writer) (int64, error)
 	}
 	if wt, ok := src.(writerTo); ok {
-		return wt.WriteTo(&retryWriter{w: dst})
+		return writeToWithRetry(wt, &retryWriter{w: dst})
 	}
 
 	if pool == nil {
@@ -98,6 +98,58 @@ func readFromWithRetry(dst interface {
 		// goroutines stuck forever under sustained memory pressure.
 		// Phase 1 (burst): fast exponential backoff up to burstBudget.
 		// Phase 2 (sustained): steady 100ms waits.
+		if IsNoBufferOrNoMem(err) {
+			AddEnobufsRetry()
+		}
+		if totalSlept >= maxTotalWait {
+			return written, err
+		}
+		if totalSlept >= burstBudget {
+			if IsNoBufferOrNoMem(err) {
+				AddEnobufsSustained()
+			}
+			time.Sleep(sustainedWait)
+			totalSlept += sustainedWait
+			continue
+		}
+		time.Sleep(backoff)
+		totalSlept += backoff
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+func writeToWithRetry(src interface {
+	WriteTo(io.Writer) (int64, error)
+}, dst io.Writer) (int64, error) {
+	const (
+		burstBudget   = 500 * time.Millisecond
+		maxBackoff    = 20 * time.Millisecond
+		sustainedWait = 100 * time.Millisecond
+		maxTotalWait  = 30 * time.Second
+	)
+	backoff := 200 * time.Microsecond
+	var totalSlept time.Duration
+
+	var written int64
+	for {
+		n, err := src.WriteTo(dst)
+		if n > 0 {
+			written += n
+			backoff = 200 * time.Microsecond
+			totalSlept = 0
+		}
+		if err == nil || errors.Is(err, io.EOF) {
+			return written, nil
+		}
+		if !isTransientBackpressure(err) {
+			return written, err
+		}
+
 		if IsNoBufferOrNoMem(err) {
 			AddEnobufsRetry()
 		}
