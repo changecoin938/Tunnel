@@ -18,3 +18,11 @@ This file is updated after each push/release.
 - Added server-only iptables bootstrap + systemd `ExecStartPre`/`ExecStopPost` helper.
 - Added server/client role-aware config generation and summary output.
 - Re-added `._*` ignore to avoid macOS sidecar file pollution.
+
+### Release v1.0.21
+- Added reinstall/upgrade-safe flow in `install.sh` (`handle_existing`).
+- Installer now stops old service, backs up existing config, and cleans old iptables rules before apply.
+- Server reinstall now reuses existing key from old config when available.
+- Updated key generation logic to avoid overwriting recovered key.
+- Added backup notice in installer summary output.
+- Updated execution order to: detect network -> handle existing -> install dependencies -> continue setup.

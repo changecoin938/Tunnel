@@ -9,6 +9,7 @@ INSTALL_DIR="/usr/local/bin"
 SERVICE_NAME="paqet"
 PORT=9999
 LOG_LEVEL="info"
+CONFIG_BACKUP_PATH=""
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -126,6 +127,46 @@ detect_network() {
     echo -e "${GREEN}Router MAC: ${ROUTER_MAC}${NC}"
 }
 
+handle_existing() {
+    local existing=false
+
+    if [[ -f "${INSTALL_DIR}/${BINARY}" ]]; then
+        existing=true
+        echo -e "${YELLOW}Existing paqet installation detected${NC}"
+        "${INSTALL_DIR}/${BINARY}" version 2>/dev/null || true
+    fi
+
+    if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+        echo -e "${YELLOW}Stopping existing service...${NC}"
+        systemctl stop "$SERVICE_NAME"
+    fi
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        CONFIG_BACKUP_PATH="${CONFIG_FILE}.bak.$(date +%s)"
+        cp "$CONFIG_FILE" "$CONFIG_BACKUP_PATH"
+        echo -e "${GREEN}Config backed up: ${CONFIG_BACKUP_PATH}${NC}"
+
+        if [[ "$ROLE" == "server" && -z "${KEY:-}" ]]; then
+            local old_key
+            old_key=$(grep -E '^[[:space:]]*key:[[:space:]]*' "$CONFIG_FILE" 2>/dev/null | head -1 | sed -E "s/^[^:]*:[[:space:]]*//; s/[\"']//g" | tr -d '[:space:]')
+            if [[ -n "$old_key" && "$old_key" != "your-secret-key-here" ]]; then
+                KEY="$old_key"
+                echo -e "${GREEN}Reusing existing key from config${NC}"
+            fi
+        fi
+    fi
+
+    if [[ "$ROLE" == "server" ]]; then
+        iptables -t raw -D PREROUTING -p tcp --dport "$PORT" -j NOTRACK 2>/dev/null || true
+        iptables -t raw -D OUTPUT -p tcp --sport "$PORT" -j NOTRACK 2>/dev/null || true
+        iptables -t mangle -D OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP 2>/dev/null || true
+    fi
+
+    if [[ "$existing" == true ]]; then
+        echo -e "${GREEN}Old installation cleaned up${NC}"
+    fi
+}
+
 install_deps() {
     echo -e "${CYAN}Installing dependencies...${NC}"
     if command -v apt-get >/dev/null 2>&1; then
@@ -212,9 +253,11 @@ download_binary() {
 }
 
 generate_key() {
-    if [[ "$ROLE" == "server" ]]; then
+    if [[ "$ROLE" == "server" && -z "${KEY:-}" ]]; then
         KEY=$("${INSTALL_DIR}/${BINARY}" secret)
-        echo -e "${GREEN}Generated key: ${KEY}${NC}"
+        echo -e "${GREEN}Generated NEW key: ${KEY}${NC}"
+    elif [[ "$ROLE" == "server" ]]; then
+        echo -e "${GREEN}Using existing key: ${KEY}${NC}"
     fi
 }
 
@@ -371,6 +414,9 @@ print_summary() {
     echo -e "  Config:  ${CONFIG_FILE}"
     echo -e "  Binary:  ${INSTALL_DIR}/${BINARY}"
     echo -e "  Service: systemctl status ${SERVICE_NAME}"
+    if [[ -n "${CONFIG_BACKUP_PATH}" ]]; then
+        echo -e "${YELLOW}  NOTE: Previous config backed up to ${CONFIG_BACKUP_PATH}${NC}"
+    fi
     echo
 
     if [[ "$ROLE" == "server" ]]; then
@@ -392,6 +438,7 @@ print_summary() {
 }
 
 detect_network
+handle_existing
 install_deps
 download_binary
 generate_key
