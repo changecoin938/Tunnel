@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+###############################################################################
+# paqet-install  —  one-command installer (builds from source)
+#
+# Step 1 — Kharej (server):
+#   curl -sL URL | bash -s -- server
+#   → detects IP, generates key, builds from source, prints client command
+#
+# Step 2 — Iran (client) — copy from server output:
+#   curl -sL URL | bash -s -- client SERVER_IP KEY
+#
+###############################################################################
+
+REPO="changecoin938/Tunnel"
+REPO_URL="https://github.com/${REPO}.git"
+BRANCH="main"
+GO_MIN="1.23"
+BUILD_DIR="/tmp/paqet-build"
+BIN_DIR="/usr/local/bin"
+LIB_DIR="/usr/local/lib/paqet"
+CONF_DIR="/etc/paqet"
+CONF_FILE="${CONF_DIR}/config.yaml"
+SERVICE_FILE="/etc/systemd/system/paqet.service"
+SERVICE_NAME="paqet"
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+info()  { printf "${GREEN}[+]${NC} %s\n" "$*"; }
+warn()  { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
+error() { printf "${RED}[✗]${NC} %s\n" "$*" >&2; }
+die()   { error "$*"; exit 1; }
+
+[[ "${EUID}" -eq 0 ]] || die "Run as root"
+
+# ─── Parse args ──────────────────────────────────────────────────────────────
+ROLE="${1:-}"
+INSTALL_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/paqet-install"
+
+if [[ "${ROLE}" == "server" ]]; then
+  KEY="${2:-}"
+  if [[ -z "${KEY}" ]]; then
+    KEY="$(openssl rand -hex 32 2>/dev/null || head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  fi
+
+elif [[ "${ROLE}" == "client" ]]; then
+  SERVER_IP="${2:-}"; KEY="${3:-}"
+  if [[ -z "${SERVER_IP}" || -z "${KEY}" ]]; then
+    echo ""
+    echo "Usage:  curl -sL URL | bash -s -- client SERVER_IP KEY"
+    echo ""
+    echo "Get SERVER_IP and KEY from server install output."
+    die "Missing SERVER_IP or KEY"
+  fi
+
+else
+  echo ""
+  printf "${CYAN}paqet Installer (build from source)${NC}\n\n"
+  echo "Step 1 — Kharej (server):  curl -sL ${INSTALL_URL} | bash -s -- server"
+  echo "Step 2 — Iran (client):    copy the command from server output"
+  echo ""
+  die "First argument must be 'server' or 'client'"
+fi
+
+PORT="9999"
+CLIENT_PORT="20000"
+
+# ─── Auto-detect network ────────────────────────────────────────────────────
+detect_network() {
+  IFACE="$(ip -o route get 8.8.8.8 2>/dev/null | sed -n 's/.*dev \([^ ]*\).*/\1/p')"
+  [[ -n "${IFACE}" ]] || die "Cannot detect interface"
+
+  IP="$(ip -o route get 8.8.8.8 2>/dev/null | sed -n 's/.*src \([^ ]*\).*/\1/p')"
+  if [[ -z "${IP}" ]]; then
+    IP="$(ip -4 addr show "${IFACE}" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')"
+  fi
+  [[ -n "${IP}" ]] || die "Cannot detect IP"
+
+  local gw_ip
+  gw_ip="$(ip route show default 2>/dev/null | sed -n 's/.*via \([^ ]*\).*/\1/p' | head -1)"
+  [[ -n "${gw_ip}" ]] || die "Cannot detect gateway"
+
+  ping -c2 -W2 -q "${gw_ip}" >/dev/null 2>&1 || true
+  sleep 1
+
+  MAC=""
+  MAC="$(ip neigh show "${gw_ip}" dev "${IFACE}" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+  [[ -n "${MAC}" ]] || MAC="$(ip neigh show "${gw_ip}" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+  [[ -n "${MAC}" ]] || MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+  [[ -n "${MAC}" ]] || MAC="$(arp -n "${gw_ip}" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+  [[ -n "${MAC}" ]] || MAC="$(grep "${gw_ip} " /proc/net/arp 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)" || true
+
+  if [[ -z "${MAC}" ]]; then
+    error "Cannot detect gateway MAC"
+    echo "--- ip neigh ---"
+    ip neigh 2>/dev/null || true
+    die "Run with: MAC=xx:xx:xx:xx:xx:xx bash -s -- ${ROLE} ..."
+  fi
+}
+
+detect_network
+
+info "Interface : ${IFACE}"
+info "IP        : ${IP}"
+info "MAC       : ${MAC}"
+
+# ─── Install Go if needed ───────────────────────────────────────────────────
+install_go() {
+  if command -v go >/dev/null 2>&1; then
+    local ver
+    ver="$(go version | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+    if awk "BEGIN{exit(!($ver >= $GO_MIN))}"; then
+      info "Go ${ver} found"
+      return
+    fi
+  fi
+
+  info "Installing Go ..."
+  local arch
+  arch="$(uname -m)"
+  case "${arch}" in
+    x86_64|amd64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) die "Unsupported arch: ${arch}" ;;
+  esac
+
+  local go_ver="1.23.6"
+  local go_url="https://go.dev/dl/go${go_ver}.linux-${arch}.tar.gz"
+  curl -fsSL "${go_url}" -o /tmp/go.tar.gz
+  rm -rf /usr/local/go
+  tar -C /usr/local -xzf /tmp/go.tar.gz
+  rm -f /tmp/go.tar.gz
+  export PATH="/usr/local/go/bin:${PATH}"
+  info "Go $(go version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') installed"
+}
+
+install_go
+
+# ─── Build from source ──────────────────────────────────────────────────────
+info "Cloning and building paqet ..."
+
+rm -rf "${BUILD_DIR}"
+git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${BUILD_DIR}" 2>/dev/null
+
+cd "${BUILD_DIR}"
+CGO_ENABLED=0 go build -o paqet .
+[[ -f paqet ]] || die "Build failed"
+
+PAQET_VERSION="$(./paqet version 2>/dev/null | head -1 | awk '{print $2}')" || true
+info "Built: ${PAQET_VERSION:-unknown}"
+
+systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+install -m 0755 paqet "${BIN_DIR}/paqet"
+info "Binary installed"
+
+# ─── Helper scripts ──────────────────────────────────────────────────────────
+mkdir -p "${LIB_DIR}"
+for s in scripts/paqet-iptables.sh scripts/paqet-systemd-iptables.sh; do
+  if [[ -f "${s}" ]]; then
+    install -m 0755 "${s}" "${LIB_DIR}/$(basename "${s}")"
+  fi
+done
+if [[ -f scripts/paqet-update ]]; then
+  install -m 0755 scripts/paqet-update "${BIN_DIR}/paqet-update"
+fi
+
+# Cleanup build
+cd /
+rm -rf "${BUILD_DIR}"
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+info "Generating config ..."
+mkdir -p "${CONF_DIR}"
+
+if [[ "${ROLE}" == "server" ]]; then
+cat > "${CONF_FILE}" <<YAML
+role: "server"
+log:
+  level: "warn"
+debug:
+  pprof: "127.0.0.1:6060"
+  diag: true
+listen:
+  addr: ":${PORT}"
+network:
+  interface: "${IFACE}"
+  dscp: 0
+  ipv4:
+    addr: "${IP}:${PORT}"
+    router_mac: "${MAC}"
+  pcap:
+    sockbuf: 33554432
+    snaplen: 65535
+    promisc: false
+    immediate: true
+    timeout_ms: 0
+transport:
+  protocol: "kcp"
+  conn: 10
+  kcp:
+    mode: "fast3"
+    mtu: 1350
+    rcvwnd: 8192
+    sndwnd: 8192
+    block: "aes"
+    key: "${KEY}"
+    guard: true
+    guard_magic: "PQT1"
+    max_sessions: 128
+    max_streams_total: 16384
+    max_streams_per_session: 4096
+    smuxbuf: 16777216
+    streambuf: 4194304
+YAML
+
+else
+cat > "${CONF_FILE}" <<YAML
+role: "client"
+log:
+  level: "warn"
+debug:
+  pprof: "127.0.0.1:6060"
+  diag: true
+network:
+  interface: "${IFACE}"
+  dscp: 0
+  ipv4:
+    addr: "${IP}:${CLIENT_PORT}"
+    router_mac: "${MAC}"
+  pcap:
+    sockbuf: 16777216
+    snaplen: 65535
+    promisc: false
+    immediate: true
+    timeout_ms: 0
+server:
+  addr: "${SERVER_IP}:${PORT}"
+transport:
+  protocol: "kcp"
+  conn: 10
+  kcp:
+    mode: "fast3"
+    mtu: 1350
+    rcvwnd: 8192
+    sndwnd: 8192
+    block: "aes"
+    key: "${KEY}"
+    guard: true
+    guard_magic: "PQT1"
+    smuxbuf: 16777216
+    streambuf: 4194304
+forward:
+  - listen: "0.0.0.0:443"
+    target: "127.0.0.1:2443"
+    protocol: "tcp"
+  - listen: "127.0.0.1:5555"
+    target: "127.0.0.1:5555"
+    protocol: "tcp"
+YAML
+fi
+
+# ─── Systemd ────────────────────────────────────────────────────────────────
+cat > "${SERVICE_FILE}" <<'UNIT'
+[Unit]
+Description=paqet tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/lib/paqet/paqet-systemd-iptables.sh apply /etc/paqet/config.yaml
+ExecStart=/usr/local/bin/paqet run -c /etc/paqet/config.yaml
+ExecStopPost=/usr/local/lib/paqet/paqet-systemd-iptables.sh remove /etc/paqet/config.yaml
+Restart=on-failure
+RestartSec=1
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable "${SERVICE_NAME}" --now 2>/dev/null || true
+sleep 2
+
+if systemctl is-active --quiet "${SERVICE_NAME}"; then
+  info "paqet is running!"
+else
+  warn "Not active yet. Check: journalctl -u paqet -f"
+fi
+
+# ─── Output ──────────────────────────────────────────────────────────────────
+echo ""
+if [[ "${ROLE}" == "server" ]]; then
+  printf "${GREEN}══════════════════════════════════════════════════════════════${NC}\n"
+  printf "${GREEN} Server done! Now run this on your IRAN (client) server:     ${NC}\n"
+  printf "${GREEN}══════════════════════════════════════════════════════════════${NC}\n"
+  echo ""
+  echo "curl -sL ${INSTALL_URL} | bash -s -- client ${IP} ${KEY}"
+  echo ""
+  printf "${YELLOW}Save these values:${NC}\n"
+  echo "  Server IP : ${IP}"
+  echo "  Key       : ${KEY}"
+  echo ""
+else
+  printf "${GREEN}══════════════════════════════════════════════════════════════${NC}\n"
+  printf "${GREEN} Client done! Tunnel is ready.                                ${NC}\n"
+  printf "${GREEN}══════════════════════════════════════════════════════════════${NC}\n"
+  echo ""
+  info "Config: ${CONF_FILE}"
+  info "Logs:   journalctl -u paqet -f"
+  echo ""
+fi
