@@ -40,6 +40,14 @@ func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) err
 		return nil
 	}
 
+	// ENOBUFS/ENOMEM is transient kernel memory pressure — never tear down the
+	// UDP stream for it. With sustained retry in the copy layer this should not
+	// happen, but treat it as benign just in case (same safety net as TCP).
+	if diag.IsNoBufferOrNoMem(errUp) || diag.IsNoBufferOrNoMem(errDown) {
+		flog.Debugf("UDP stream %d to %s hit ENOBUFS (benign): up=%v down=%v", strm.SID(), addr, errUp, errDown)
+		return nil
+	}
+
 	if !diag.IsBenignStreamErr(errUp) {
 		flog.Errorf("UDP stream %d to %s failed (up): %v", strm.SID(), addr, errUp)
 		return errUp

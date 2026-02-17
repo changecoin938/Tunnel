@@ -15,8 +15,13 @@ type PCAP struct {
 
 func (p *PCAP) setDefaults(role string) {
 	if p.Sockbuf == 0 {
-		_ = role
-		p.Sockbuf = 16 * 1024 * 1024
+		if role == "server" {
+			// Servers handle many concurrent streams; larger kernel buffer absorbs
+			// bursts from 100+ users without dropping packets.
+			p.Sockbuf = 64 * 1024 * 1024
+		} else {
+			p.Sockbuf = 16 * 1024 * 1024
+		}
 	}
 	if p.Snaplen == 0 {
 		// Bounds per-packet capture size. Keep this large enough to safely capture
@@ -50,8 +55,8 @@ func (p *PCAP) validate() []error {
 		errors = append(errors, fmt.Errorf("PCAP sockbuf must be >= 1024 bytes"))
 	}
 
-	if p.Sockbuf > 100*1024*1024 {
-		errors = append(errors, fmt.Errorf("PCAP sockbuf too large (max 100MB)"))
+	if p.Sockbuf > 256*1024*1024 {
+		errors = append(errors, fmt.Errorf("PCAP sockbuf too large (max 256MB)"))
 	}
 	if p.Snaplen < 256 {
 		errors = append(errors, fmt.Errorf("PCAP snaplen must be >= 256 bytes"))

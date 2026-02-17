@@ -6,16 +6,17 @@ import (
 
 var TPool = sync.Pool{
 	New: func() any {
-		// Keep per-goroutine memory modest for high concurrency (thousands of streams).
-		// Larger buffers slightly help throughput, but can OOM 4GB boxes under load.
-		b := make([]byte, 64*1024)
+		// 128KB balances throughput (fewer read/write cycles) against memory on
+		// 4GB boxes. At 500 concurrent TCP streams × 2 directions = 1000 buffers
+		// = 128MB worst-case, which fits comfortably.
+		b := make([]byte, 128*1024)
 		return &b
 	},
 }
 
 var UPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 64*1024)
+		b := make([]byte, 128*1024)
 		return &b
 	},
 }

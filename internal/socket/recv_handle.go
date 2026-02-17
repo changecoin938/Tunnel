@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gopacket/gopacket/pcap"
 )
@@ -48,7 +49,9 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
 			// NextErrorTimeoutExpired when no packets arrive within the window.
 			// This is NOT fatal; keep waiting.
 			if err == pcap.NextErrorTimeoutExpired {
-				runtime.Gosched()
+				// Brief sleep avoids a tight spin-loop that wastes CPU when no
+				// packets are available. 100µs is short enough to keep latency low.
+				time.Sleep(100 * time.Microsecond)
 				continue
 			}
 			return nil, nil, err
@@ -110,12 +113,19 @@ func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 			return a
 		}
 	}
-	if h.addrCacheLen.Add(1) > 65536 {
-		h.addrCache.Range(func(key, _ any) bool {
-			h.addrCache.Delete(key)
-			return true
-		})
-		h.addrCacheLen.Store(0)
+	// Evict incrementally instead of scanning the entire map. Each time we exceed
+	// the high-water mark, delete a batch of entries to amortize the cost. This
+	// avoids the O(n) full-scan that would block all concurrent reads.
+	if newLen := h.addrCacheLen.Add(1); newLen > 65536 {
+		// Only one goroutine needs to evict. Use CAS to claim the eviction duty.
+		if h.addrCacheLen.CompareAndSwap(newLen, newLen-4096) {
+			evicted := 0
+			h.addrCache.Range(func(key, _ any) bool {
+				h.addrCache.Delete(key)
+				evicted++
+				return evicted < 4096
+			})
+		}
 	}
 	return addr
 }

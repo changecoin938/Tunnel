@@ -112,7 +112,7 @@ func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) e
 	}
 
 	backoff := 200 * time.Microsecond
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < 12; attempt++ {
 		_, err = src.WriteToUDP(buf[:n], addr)
 		if err == nil {
 			diag.AddUDPDown(int64(n))
@@ -123,7 +123,7 @@ func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) e
 			strings.Contains(err.Error(), "No buffer space available") ||
 			strings.Contains(err.Error(), "Cannot allocate memory") {
 			time.Sleep(backoff)
-			if backoff < 5*time.Millisecond {
+			if backoff < 10*time.Millisecond {
 				backoff *= 2
 			}
 			continue

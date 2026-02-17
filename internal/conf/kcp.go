@@ -61,10 +61,12 @@ func (k *KCP) setDefaults(role string, _ int) {
 	}
 
 	if k.Rcvwnd == 0 {
-		k.Rcvwnd = 1024
+		// 4096 packets ≈ 5.5MB per session at 1350 MTU. Balances throughput
+		// against memory for 100+ concurrent sessions on 4GB servers.
+		k.Rcvwnd = 4096
 	}
 	if k.Sndwnd == 0 {
-		k.Sndwnd = 1024
+		k.Sndwnd = 4096
 	}
 
 	// if k.Dshard == 0 {
@@ -105,16 +107,22 @@ func (k *KCP) setDefaults(role string, _ int) {
 	}
 
 	if k.Smuxbuf == 0 {
-		k.Smuxbuf = 2 * 1024 * 1024
+		// 8MB session buffer gives adequate per-stream headroom under high
+		// concurrency (e.g. 256 streams × 32KB = 8MB).
+		k.Smuxbuf = 8 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		k.Streambuf = 128 * 1024
+		// 256KB per-stream buffer prevents small-stream starvation while
+		// keeping total memory reasonable (256 streams × 256KB = 64MB max).
+		k.Streambuf = 256 * 1024
 	}
 
 	// Match UI/examples defaults for server-side limits.
 	if role == "server" {
 		if k.MaxStreamsTotal == 0 {
-			k.MaxStreamsTotal = 4096
+			// 16384 accommodates 500+ concurrent users with multiple streams each
+			// without hitting the global cap and silently dropping new streams.
+			k.MaxStreamsTotal = 16384
 		}
 		if k.MaxStreamsPerSession == 0 {
 			k.MaxStreamsPerSession = 256

@@ -1,12 +1,14 @@
 package socks
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
+	"syscall"
 	"time"
 
 	"github.com/txthinking/socks5"
@@ -65,11 +67,30 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 						return
 					}
 					dd := socks5.NewDatagram(atyp, dstAddr, dstPort, buf[:n])
-					_, err = server.UDPConn.WriteToUDP(dd.Bytes(), peer)
-					if err != nil {
-						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", len(dd.Bytes()), clientAddr, err)
+					ddBytes := dd.Bytes()
+					written := false
+					backoff := 200 * time.Microsecond
+					for attempt := 0; attempt < 8; attempt++ {
+						_, err = server.UDPConn.WriteToUDP(ddBytes, peer)
+						if err == nil {
+							written = true
+							break
+						}
+						if errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+							time.Sleep(backoff)
+							if backoff < 10*time.Millisecond {
+								backoff *= 2
+							}
+							continue
+						}
+						break // non-transient error
+					}
+					if !written && err != nil &&
+						!errors.Is(err, syscall.ENOBUFS) && !errors.Is(err, syscall.ENOMEM) {
+						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", len(ddBytes), clientAddr, err)
 						return
 					}
+					// ENOBUFS after retries = acceptable UDP packet loss; don't tear down relay.
 					diag.AddUDPDown(int64(n))
 				}
 			}

@@ -48,9 +48,11 @@ func BidiCopy(ctx context.Context, a net.Conn, b net.Conn, f1 func() error, f2 f
 		_ = b.SetDeadline(cancelAt)
 	}
 
-	// Use 5s force-close timeout (must be shorter than the server's 10s shutdown timer
-	// to avoid orphaned goroutines when the server exits).
-	shutdownTimer := time.NewTimer(5 * time.Second)
+	// Force-close timeout for stuck goroutines after SetDeadline cancellation.
+	// 30s allows long-running UDP streams (speed tests, large transfers) to finish
+	// gracefully while still bounding goroutine lifetime. The server's shutdown
+	// context will cancel active copies well before this fires during orderly exit.
+	shutdownTimer := time.NewTimer(30 * time.Second)
 	defer shutdownTimer.Stop()
 
 	for got < 2 {
@@ -60,7 +62,7 @@ func BidiCopy(ctx context.Context, a net.Conn, b net.Conn, f1 func() error, f2 f
 			default:
 			}
 		}
-		shutdownTimer.Reset(5 * time.Second)
+		shutdownTimer.Reset(30 * time.Second)
 
 		select {
 		case res := <-errCh:

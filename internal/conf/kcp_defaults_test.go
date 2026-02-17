@@ -20,14 +20,14 @@ func TestKCPSetDefaults_AlignWithUIClient(t *testing.T) {
 	if k.Mode != "fast2" {
 		t.Fatalf("expected mode fast2, got %q", k.Mode)
 	}
-	if k.Rcvwnd != 1024 || k.Sndwnd != 1024 {
-		t.Fatalf("expected window defaults 1024/1024, got %d/%d", k.Rcvwnd, k.Sndwnd)
+	if k.Rcvwnd != 4096 || k.Sndwnd != 4096 {
+		t.Fatalf("expected window defaults 4096/4096, got %d/%d", k.Rcvwnd, k.Sndwnd)
 	}
-	if k.Smuxbuf != 2*1024*1024 {
-		t.Fatalf("expected smuxbuf 2MiB, got %d", k.Smuxbuf)
+	if k.Smuxbuf != 8*1024*1024 {
+		t.Fatalf("expected smuxbuf 8MiB, got %d", k.Smuxbuf)
 	}
-	if k.Streambuf != 128*1024 {
-		t.Fatalf("expected streambuf 128KiB, got %d", k.Streambuf)
+	if k.Streambuf != 256*1024 {
+		t.Fatalf("expected streambuf 256KiB, got %d", k.Streambuf)
 	}
 }
 
@@ -38,8 +38,8 @@ func TestKCPSetDefaults_AlignWithUIServerLimits(t *testing.T) {
 	if k.MaxSessions != 512 {
 		t.Fatalf("expected max_sessions 512, got %d", k.MaxSessions)
 	}
-	if k.MaxStreamsTotal != 4096 {
-		t.Fatalf("expected max_streams_total 4096, got %d", k.MaxStreamsTotal)
+	if k.MaxStreamsTotal != 16384 {
+		t.Fatalf("expected max_streams_total 16384, got %d", k.MaxStreamsTotal)
 	}
 	if k.MaxStreamsPerSession != 256 {
 		t.Fatalf("expected max_streams_per_session 256, got %d", k.MaxStreamsPerSession)
