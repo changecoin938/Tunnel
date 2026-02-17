@@ -19,13 +19,3 @@ func (it *Iterator[T]) Next() (T, bool) {
 	}
 	return it.Items[i%n], true
 }
-
-func (it *Iterator[T]) Peek() (T, bool) {
-	n := uint64(len(it.Items))
-	if n == 0 {
-		var zero T
-		return zero, false
-	}
-	i := it.index.Load()
-	return it.Items[i%n], true
-}

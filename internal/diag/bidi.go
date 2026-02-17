@@ -48,7 +48,9 @@ func BidiCopy(ctx context.Context, a net.Conn, b net.Conn, f1 func() error, f2 f
 		_ = b.SetDeadline(cancelAt)
 	}
 
-	shutdownTimer := time.NewTimer(30 * time.Second)
+	// Use 5s force-close timeout (must be shorter than the server's 10s shutdown timer
+	// to avoid orphaned goroutines when the server exits).
+	shutdownTimer := time.NewTimer(5 * time.Second)
 	defer shutdownTimer.Stop()
 
 	for got < 2 {
@@ -58,7 +60,7 @@ func BidiCopy(ctx context.Context, a net.Conn, b net.Conn, f1 func() error, f2 f
 			default:
 			}
 		}
-		shutdownTimer.Reset(30 * time.Second)
+		shutdownTimer.Reset(5 * time.Second)
 
 		select {
 		case res := <-errCh:

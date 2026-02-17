@@ -75,6 +75,11 @@ SOCKS5/Forward → client.TCP/UDP() → KCP+smux stream → server.handleStrm() 
 - [x] BUG-024 fixed in `cmd/run/client.go` (broken client state — `Infof` → `Fatalf` on Start failure)
 - [x] BUG-025 fixed in `internal/client/timed_conn.go` (sendTCPF missing write deadline — indefinite block)
 - [x] BUG-026 fixed in `internal/client/timed_conn.go` (reconnect sleep ignores shutdown — `time.Sleep` → `select`)
+- [x] BUG-027 fixed in `internal/tnet/kcp/conn.go` (Close order — smux Session now closed before KCP UDPSession)
+- [x] BUG-028 fixed in `internal/server/udp.go` (UDP dial missing timeout/context — `net.Dial` → `DialContext` with 10s timeout)
+- [x] BUG-029 fixed in `internal/client/dial.go` + callers (newStrm context-aware — respects ctx.Done during shutdown)
+- [x] BUG-030 fixed in `internal/diag/bidi.go` (BidiCopy force-close 30s → 5s — must be shorter than server's 10s shutdown)
+- [x] BUG-031 fixed in `internal/diag/copy.go` (err.Error() alloc in hot path — cached to single call per error)
 
 ## 4. Optimization Tracker
 
@@ -243,10 +248,71 @@ Six new bugs fixed plus dead code removal:
 
 #### Deferred findings (not fixed — low priority or by design)
 - SSRF (server dials any client-requested address) — by design for tunnel proxy
-- Close order in `kcp/conn.go` (UDPSession before smux) — complex change, needs careful testing
 - pcap handle leaks on `SetDirection` failure — extremely rare error path
 - Server listener leak on partial init — rare startup failure path
 - `runtime.ReadMemStats` STW pause in diag endpoint — acceptable for debug endpoint
+
+#### Verification
+- `go vet ./...` ✓
+- `go build ./...` ✓
+- `go test ./...` ✓
+
+### Session: 2026-02-17 (stability audit for 500-user production)
+
+Final deep audit targeting 500 concurrent users, 4 CPU / 4GB RAM / 10Gbps.
+Five parallel agents reviewed all packages. Five stability bugs fixed plus dead code cleanup:
+
+#### BUG-027: Conn.Close() wrong order — smux session closed AFTER KCP transport
+- **File**: `internal/tnet/kcp/conn.go`
+- **Problem**: `UDPSession.Close()` was called before `Session.Close()`. smux's sendLoop tried to flush FIN frames on an already-dead KCP transport — incomplete stream teardown, remote peer holds resources until 60s keepalive timeout
+- **Fix**: Reversed close order — smux Session first (delivers FIN frames), then KCP UDPSession
+
+#### BUG-028: Server UDP dial has no timeout and no context cancellation
+- **File**: `internal/server/udp.go`
+- **Problem**: `net.Dial("udp", addr)` has no timeout and ignores `ctx`. DNS resolution can hang indefinitely, holding a stream semaphore token. Under 500-user load, stuck goroutines accumulate
+- **Fix**: Changed to `&net.Dialer{Timeout: 10s}.DialContext(ctx, "udp", addr)`
+
+#### BUG-029: newStrm() ignores context cancellation — 3s stall on shutdown
+- **File**: `internal/client/dial.go` + `tcp.go` + `udp.go` + callers
+- **Problem**: `newStrm()` had no `context.Context` parameter. During shutdown, goroutines blocked in newStrm for up to 3 seconds trying to open streams on dying connections. With 500 users, dozens of goroutines stalled
+- **Fix**: Added `ctx context.Context` parameter, `select` on `ctx.Done()` in the wait loop. Updated `TCP()`, `UDP()` signatures and all callers (socks, forward)
+
+#### BUG-030: BidiCopy 30s force-close timer > server's 10s shutdown timer
+- **File**: `internal/diag/bidi.go`
+- **Problem**: BidiCopy used a 30-second force-close timeout, but the server shutdown timer is 10 seconds. Under 500 active streams during shutdown: server times out at 10s, goroutines orphaned for another 20s holding FDs and semaphore tokens
+- **Fix**: Reduced force-close timer from 30s to 5s (safely under server's 10s shutdown budget)
+
+#### BUG-031: err.Error() allocates strings on ENOBUFS hot path
+- **File**: `internal/diag/copy.go`
+- **Problem**: `IsNoBufferOrNoMem()` and `isTransientBackpressure()` called `err.Error()` twice per error check, allocating heap strings during ENOBUFS bursts — GC pressure precisely when the system is under memory pressure
+- **Fix**: Short-circuit with `errors.Is()` first (zero-alloc), cache `err.Error()` result when string fallback needed
+
+#### Dead code removal
+- **Removed** `Iterator.Peek()` in `internal/pkg/iterator/iterator.go` — never called
+- **Removed** commented-out `validateMAC` in `internal/conf/validation.go` — dead code
+
+#### Deferred findings (from 500-user audit — not fixed)
+**Architecture-level (would require major refactoring):**
+- pcap.Handle internal mutex serializes all 4 cores on send/receive path — AF_PACKET TX/RX rings would fix
+- Full TCP checksum in software (no HW offload possible via pcap) — ~20-30% of one core at 1M pps
+- smux keepalive 60s timeout delays KCP death detection — no fast-path bridge from KCP to smux
+- No runtime memory guard — 500 users with defaults can consume ~2.9GB on 4GB box (smux+KCP+stream buffers)
+
+**Medium priority (safe to fix later):**
+- Address cache full-flush eviction in recv_handle.go blocks receive under DDoS (65536+ entries)
+- SOCKS5 UDP WriteToUDP lacks ENOBUFS retry (unlike forward/udp.go which retries)
+- ENOBUFS retry loops in copy.go are not context-aware — can delay shutdown by 30s
+- Server session semaphore silently drops burst reconnections (no brief wait)
+- No client-side stream limit (server has 4096 max, client has none)
+- Ping() opens full smux stream per probe — server-side stream slot consumed
+- handleConn has no first-stream deadline — idle sessions hold semaphore 60s
+- `socks5.NewDatagram` allocates per UDP packet (OPT-007 still open)
+
+**Low priority:**
+- checksum.go could unroll to 32 bytes/iteration for ~4x speedup
+- `defer` closure in WriteParts hot path adds ~50-100ns/packet
+- IP.To4()/To16() called per packet instead of cached
+- `atomic.Value` type assertions on deadline fields every packet
 
 #### Verification
 - `go vet ./...` ✓

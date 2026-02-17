@@ -181,23 +181,30 @@ func IsNoBufferOrNoMem(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, syscall.ENOBUFS) ||
-		errors.Is(err, syscall.ENOMEM) ||
-		strings.Contains(err.Error(), "No buffer space available") ||
-		strings.Contains(err.Error(), "Cannot allocate memory")
+	if errors.Is(err, syscall.ENOBUFS) || errors.Is(err, syscall.ENOMEM) {
+		return true
+	}
+	// Fallback: libpcap wraps errno as a string. Cache err.Error() to avoid
+	// allocating two strings on every call in the hot path.
+	s := err.Error()
+	return strings.Contains(s, "No buffer space available") ||
+		strings.Contains(s, "Cannot allocate memory")
 }
 
 func isTransientBackpressure(err error) bool {
 	if err == nil {
 		return false
 	}
+	if IsNoBufferOrNoMem(err) {
+		return true
+	}
 	// Under heavy load, TCPConn's splice/sendfile paths can surface EAGAIN/EWOULDBLOCK.
 	// Treat it like temporary kernel backpressure: retry with a short backoff instead
 	// of tearing down the stream (speedtest bursts commonly hit this).
-	return IsNoBufferOrNoMem(err) ||
-		errors.Is(err, syscall.EAGAIN) ||
-		errors.Is(err, syscall.EWOULDBLOCK) ||
-		strings.Contains(err.Error(), "Resource temporarily unavailable")
+	if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+		return true
+	}
+	return strings.Contains(err.Error(), "Resource temporarily unavailable")
 }
 
 func writeFullWithRetry(dst io.Writer, p []byte) (int, error) {

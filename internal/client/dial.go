@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"paqet/internal/flog"
 	"paqet/internal/tnet"
@@ -9,7 +10,7 @@ import (
 
 var errNoTunnelConnections = errors.New("no tunnel connections available")
 
-func (c *Client) newStrm() (tnet.Strm, error) {
+func (c *Client) newStrm(ctx context.Context) (tnet.Strm, error) {
 	if c == nil || c.iter == nil || len(c.iter.Items) == 0 {
 		return nil, errNoTunnelConnections
 	}
@@ -22,6 +23,10 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 	deadline := time.Now().Add(3 * time.Second)
 	kicked := false
 	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+
 		n := len(c.iter.Items)
 		for i := 0; i < n; i++ {
 			tc, ok := c.iter.Next()
@@ -56,6 +61,9 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 		remaining := time.Until(deadline)
 		waitTimer := time.NewTimer(remaining)
 		select {
+		case <-ctx.Done():
+			waitTimer.Stop()
+			return nil, ctx.Err()
 		case <-c.getConnReady():
 			waitTimer.Stop()
 			// A connection may be ready, retry immediately.

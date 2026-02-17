@@ -64,7 +64,7 @@ func (h *Handler) handleTCPConnect(conn *net.TCPConn, r *socks5.Request) error {
 		return err
 	}
 
-	strm, err := h.client.TCP(r.Address())
+	strm, err := h.client.TCP(h.ctx, r.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish stream for %s -> %s: %v", conn.RemoteAddr(), r.Address(), err)
 		return err

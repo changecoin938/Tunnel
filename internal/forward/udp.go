@@ -60,7 +60,7 @@ func (f *Forward) handleUDPPacket(ctx context.Context, conn *net.UDPConn) error 
 		return nil
 	}
 
-	strm, new, k, err := f.client.UDP(caddr.String(), f.targetAddr)
+	strm, new, k, err := f.client.UDP(ctx, caddr.String(), f.targetAddr)
 	if err != nil {
 		flog.Errorf("failed to establish UDP stream for %s -> %s: %v", caddr, f.targetAddr, err)
 		return err

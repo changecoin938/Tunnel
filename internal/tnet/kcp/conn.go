@@ -63,13 +63,16 @@ func (c *Conn) Ping(wait bool) error {
 
 func (c *Conn) Close() error {
 	var errs []error
-	if c.UDPSession != nil {
-		if err := c.UDPSession.Close(); err != nil {
+	// Close smux Session BEFORE KCP UDPSession so that FIN frames for open
+	// streams can still be delivered over the live transport. Reversing this
+	// order causes smux's sendLoop to hit a dead transport while flushing.
+	if c.Session != nil {
+		if err := c.Session.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if c.Session != nil {
-		if err := c.Session.Close(); err != nil {
+	if c.UDPSession != nil {
+		if err := c.UDPSession.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}

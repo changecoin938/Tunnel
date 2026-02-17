@@ -7,6 +7,7 @@ import (
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
 	"paqet/internal/tnet"
+	"time"
 )
 
 func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *protocol.Proto) error {
@@ -15,7 +16,8 @@ func (s *Server) handleUDPProtocol(ctx context.Context, strm tnet.Strm, p *proto
 }
 
 func (s *Server) handleUDP(ctx context.Context, strm tnet.Strm, addr string) error {
-	conn, err := net.Dial("udp", addr)
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "udp", addr)
 	if err != nil {
 		flog.Errorf("failed to establish UDP connection to %s for stream %d: %v", addr, strm.SID(), err)
 		return err

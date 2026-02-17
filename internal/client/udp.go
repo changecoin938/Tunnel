@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/hash"
 	"paqet/internal/protocol"
@@ -8,7 +9,7 @@ import (
 	"time"
 )
 
-func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
+func (c *Client) UDP(ctx context.Context, lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 	key := hash.AddrPair(lAddr, tAddr)
 	c.udpPool.mu.RLock()
 	if strm, exists := c.udpPool.strms[key]; exists && strm != nil {
@@ -19,7 +20,7 @@ func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 	}
 	c.udpPool.mu.RUnlock()
 
-	strm, err := c.newStrm()
+	strm, err := c.newStrm(ctx)
 	if err != nil {
 		flog.Debugf("failed to create stream for UDP %s -> %s: %v", lAddr, tAddr, err)
 		return nil, false, 0, err
