@@ -1,0 +1,401 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="changecoin938/Tunnel"
+BINARY="paqet"
+CONFIG_DIR="/etc/paqet"
+CONFIG_FILE="${CONFIG_DIR}/config.yaml"
+INSTALL_DIR="/usr/local/bin"
+SERVICE_NAME="paqet"
+PORT=9999
+LOG_LEVEL="info"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+usage() {
+    echo "Usage:"
+    echo "  Server:  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s server"
+    echo "  Client:  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s client SERVER_IP KEY"
+    exit 1
+}
+
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo -e "${RED}Error: run as root (use sudo)${NC}" >&2
+    exit 1
+fi
+
+ROLE="${1:-}"
+if [[ -z "$ROLE" ]]; then
+    usage
+fi
+
+if [[ "$ROLE" == "server" ]]; then
+    SERVER_IP=""
+    KEY=""
+elif [[ "$ROLE" == "client" ]]; then
+    SERVER_IP="${2:-}"
+    KEY="${3:-}"
+    if [[ -z "$SERVER_IP" || -z "$KEY" ]]; then
+        echo -e "${RED}Error: client mode requires SERVER_IP and KEY${NC}" >&2
+        usage
+    fi
+else
+    echo -e "${RED}Error: role must be 'server' or 'client'${NC}" >&2
+    usage
+fi
+
+detect_arch() {
+    local arch
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64) echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        armv7*|armhf) echo "arm32" ;;
+        mips) echo "mips" ;;
+        mipsel|mipsle) echo "mipsle" ;;
+        mips64) echo "mips64" ;;
+        mips64el|mips64le) echo "mips64le" ;;
+        *)
+            echo -e "${RED}Unsupported architecture: $arch${NC}" >&2
+            exit 1
+            ;;
+    esac
+}
+
+ARCH=$(detect_arch)
+echo -e "${CYAN}Architecture: ${ARCH}${NC}"
+
+detect_network() {
+    IFACE=$(ip -4 route show default | awk '{print $5; exit}')
+    if [[ -z "${IFACE}" ]]; then
+        echo -e "${RED}Error: cannot detect default network interface${NC}" >&2
+        exit 1
+    fi
+    echo -e "${GREEN}Interface: ${IFACE}${NC}"
+
+    LOCAL_IP=$(ip -4 addr show "$IFACE" | grep -oE 'inet [0-9.]+' | awk '{print $2}' | head -1)
+    if [[ -z "${LOCAL_IP}" ]]; then
+        echo -e "${RED}Error: cannot detect IPv4 address on ${IFACE}${NC}" >&2
+        exit 1
+    fi
+    echo -e "${GREEN}Local IP: ${LOCAL_IP}${NC}"
+
+    GATEWAY_IP=$(ip -4 route show default | awk '{print $3; exit}')
+    if [[ -z "${GATEWAY_IP}" ]]; then
+        echo -e "${RED}Error: cannot detect gateway IP${NC}" >&2
+        exit 1
+    fi
+    echo -e "${GREEN}Gateway IP: ${GATEWAY_IP}${NC}"
+
+    ROUTER_MAC=""
+
+    ROUTER_MAC=$(ip neigh show "$GATEWAY_IP" dev "$IFACE" 2>/dev/null | awk '{print $5; exit}')
+
+    if [[ -z "$ROUTER_MAC" || "$ROUTER_MAC" == "FAILED" ]]; then
+        ping -c 1 -W 1 "$GATEWAY_IP" >/dev/null 2>&1 || true
+        sleep 0.5
+        ROUTER_MAC=$(ip neigh show "$GATEWAY_IP" dev "$IFACE" 2>/dev/null | awk '{print $5; exit}')
+    fi
+
+    if [[ -z "$ROUTER_MAC" || "$ROUTER_MAC" == "FAILED" ]]; then
+        if command -v arp >/dev/null 2>&1; then
+            ROUTER_MAC=$(arp -n "$GATEWAY_IP" 2>/dev/null | awk '/ether/{print $3; exit}')
+        fi
+    fi
+
+    if [[ -z "$ROUTER_MAC" || "$ROUTER_MAC" == "FAILED" ]]; then
+        ROUTER_MAC=$(grep "$GATEWAY_IP " /proc/net/arp 2>/dev/null | awk '{print $4; exit}')
+    fi
+
+    if [[ -z "$ROUTER_MAC" || "$ROUTER_MAC" == "FAILED" || "$ROUTER_MAC" == "00:00:00:00:00:00" ]]; then
+        if command -v arping >/dev/null 2>&1; then
+            ROUTER_MAC=$(arping -c 1 -I "$IFACE" "$GATEWAY_IP" 2>/dev/null | grep -oE '\[[0-9a-fA-F:]+\]' | tr -d '[]' | head -1)
+        fi
+    fi
+
+    if [[ -z "$ROUTER_MAC" || "$ROUTER_MAC" == "FAILED" || "$ROUTER_MAC" == "00:00:00:00:00:00" ]]; then
+        echo -e "${RED}Error: cannot detect gateway MAC address${NC}" >&2
+        echo -e "${YELLOW}Try: ping ${GATEWAY_IP} && ip neigh show ${GATEWAY_IP}${NC}" >&2
+        exit 1
+    fi
+
+    echo -e "${GREEN}Router MAC: ${ROUTER_MAC}${NC}"
+}
+
+install_deps() {
+    echo -e "${CYAN}Installing dependencies...${NC}"
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq
+        apt-get install -y -qq libpcap-dev tar gzip curl iproute2 iptables iputils-ping net-tools >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y -q libpcap-devel tar gzip curl iproute iptables iputils net-tools >/dev/null 2>&1
+    elif command -v apk >/dev/null 2>&1; then
+        apk add --no-cache libpcap-dev tar gzip curl iproute2 iptables iputils net-tools >/dev/null 2>&1
+    fi
+    echo -e "${GREEN}Dependencies installed${NC}"
+}
+
+calc_conn() {
+    local n
+    n=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+    if [[ -z "$n" || "$n" -lt 2 ]]; then
+        n=2
+    fi
+    if [[ "$n" -gt 16 ]]; then
+        n=16
+    fi
+    echo "$n"
+}
+
+CONN=$(calc_conn)
+
+download_binary() {
+    echo -e "${CYAN}Downloading paqet binary...${NC}"
+
+    local tag
+    tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4)
+
+    if [[ -z "$tag" ]]; then
+        echo -e "${YELLOW}No release found, trying latest tag...${NC}"
+        tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/tags" 2>/dev/null | grep '"name"' | head -1 | cut -d'"' -f4)
+    fi
+
+    if [[ -z "$tag" ]]; then
+        echo -e "${RED}Error: cannot find any release or tag${NC}" >&2
+        exit 1
+    fi
+
+    echo -e "${GREEN}Release: ${tag}${NC}"
+
+    local url="https://github.com/${REPO}/releases/download/${tag}/paqet-linux-${ARCH}-${tag}.tar.gz"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    echo -e "${CYAN}Downloading: ${url}${NC}"
+    if ! curl -fsSL "$url" -o "${tmp_dir}/paqet.tar.gz"; then
+        echo -e "${RED}Error: download failed${NC}" >&2
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    if ! tar -xzf "${tmp_dir}/paqet.tar.gz" -C "$tmp_dir"; then
+        echo -e "${RED}Error: invalid release archive${NC}" >&2
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    local bin_file
+    bin_file=$(find "$tmp_dir" -name "paqet_linux_*" -type f | head -1)
+    if [[ -z "$bin_file" ]]; then
+        bin_file=$(find "$tmp_dir" -name "paqet" -type f | head -1)
+    fi
+
+    if [[ -z "$bin_file" ]]; then
+        echo -e "${RED}Error: binary not found in tarball${NC}" >&2
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+
+    mkdir -p "$INSTALL_DIR"
+    cp "$bin_file" "${INSTALL_DIR}/${BINARY}"
+    chmod +x "${INSTALL_DIR}/${BINARY}"
+    rm -rf "$tmp_dir"
+
+    echo -e "${GREEN}Binary installed: ${INSTALL_DIR}/${BINARY}${NC}"
+    "${INSTALL_DIR}/${BINARY}" version || true
+}
+
+generate_key() {
+    if [[ "$ROLE" == "server" ]]; then
+        KEY=$("${INSTALL_DIR}/${BINARY}" secret)
+        echo -e "${GREEN}Generated key: ${KEY}${NC}"
+    fi
+}
+
+generate_config() {
+    echo -e "${CYAN}Generating config...${NC}"
+    mkdir -p "$CONFIG_DIR"
+
+    if [[ "$ROLE" == "server" ]]; then
+        cat > "$CONFIG_FILE" <<YAML
+role: "server"
+
+log:
+  level: "${LOG_LEVEL}"
+
+listen:
+  addr: ":${PORT}"
+
+network:
+  interface: "${IFACE}"
+  ipv4:
+    addr: "${LOCAL_IP}:${PORT}"
+    router_mac: "${ROUTER_MAC}"
+  pcap:
+    sockbuf: 67108864
+
+transport:
+  protocol: "kcp"
+  conn: ${CONN}
+  kcp:
+    mode: "fast"
+    block: "aes"
+    key: "${KEY}"
+    rcvwnd: 512
+    sndwnd: 512
+    smuxbuf: 1048576
+    streambuf: 65536
+YAML
+    else
+        cat > "$CONFIG_FILE" <<YAML
+role: "client"
+
+log:
+  level: "${LOG_LEVEL}"
+
+socks5:
+  - listen: "127.0.0.1:1080"
+
+network:
+  interface: "${IFACE}"
+  ipv4:
+    addr: "${LOCAL_IP}:0"
+    router_mac: "${ROUTER_MAC}"
+  pcap:
+    sockbuf: 4194304
+
+server:
+  addr: "${SERVER_IP}:${PORT}"
+
+transport:
+  protocol: "kcp"
+  conn: ${CONN}
+  kcp:
+    mode: "fast"
+    block: "aes"
+    key: "${KEY}"
+    rcvwnd: 512
+    sndwnd: 512
+    smuxbuf: 1048576
+    streambuf: 65536
+YAML
+    fi
+
+    echo -e "${GREEN}Config written: ${CONFIG_FILE}${NC}"
+}
+
+setup_iptables() {
+    if [[ "$ROLE" != "server" ]]; then
+        return
+    fi
+
+    echo -e "${CYAN}Configuring iptables...${NC}"
+
+    iptables -t raw -D PREROUTING -p tcp --dport "$PORT" -j NOTRACK 2>/dev/null || true
+    iptables -t raw -D OUTPUT -p tcp --sport "$PORT" -j NOTRACK 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP 2>/dev/null || true
+
+    iptables -t raw -A PREROUTING -p tcp --dport "$PORT" -j NOTRACK
+    iptables -t raw -A OUTPUT -p tcp --sport "$PORT" -j NOTRACK
+    iptables -t mangle -A OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP
+
+    echo -e "${GREEN}iptables configured for port ${PORT}${NC}"
+}
+
+create_service() {
+    echo -e "${CYAN}Creating systemd service...${NC}"
+
+    if [[ "$ROLE" == "server" ]]; then
+        cat > "${CONFIG_DIR}/iptables.sh" <<IPTSH
+#!/usr/bin/env bash
+set -euo pipefail
+PORT=${PORT}
+action="$1"
+if [[ "$action" == "start" ]]; then
+    iptables -t raw -C PREROUTING -p tcp --dport "$PORT" -j NOTRACK 2>/dev/null || iptables -t raw -A PREROUTING -p tcp --dport "$PORT" -j NOTRACK
+    iptables -t raw -C OUTPUT -p tcp --sport "$PORT" -j NOTRACK 2>/dev/null || iptables -t raw -A OUTPUT -p tcp --sport "$PORT" -j NOTRACK
+    iptables -t mangle -C OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -A OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP
+elif [[ "$action" == "stop" ]]; then
+    iptables -t raw -D PREROUTING -p tcp --dport "$PORT" -j NOTRACK 2>/dev/null || true
+    iptables -t raw -D OUTPUT -p tcp --sport "$PORT" -j NOTRACK 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP 2>/dev/null || true
+fi
+IPTSH
+        chmod +x "${CONFIG_DIR}/iptables.sh"
+    fi
+
+    local extra_exec=""
+    if [[ "$ROLE" == "server" ]]; then
+        extra_exec="ExecStartPre=${CONFIG_DIR}/iptables.sh start
+ExecStopPost=${CONFIG_DIR}/iptables.sh stop"
+    fi
+
+    cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
+[Unit]
+Description=Paqet Tunnel (${ROLE})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+${extra_exec}
+ExecStart=${INSTALL_DIR}/${BINARY} run -c ${CONFIG_FILE}
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+LimitNPROC=65535
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME"
+    systemctl restart "$SERVICE_NAME"
+
+    echo -e "${GREEN}Service created and started${NC}"
+}
+
+print_summary() {
+    echo
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${GREEN}  Paqet ${ROLE} installed successfully!${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo
+    echo -e "  Config:  ${CONFIG_FILE}"
+    echo -e "  Binary:  ${INSTALL_DIR}/${BINARY}"
+    echo -e "  Service: systemctl status ${SERVICE_NAME}"
+    echo
+
+    if [[ "$ROLE" == "server" ]]; then
+        echo -e "${YELLOW}Run this on the CLIENT (Iran):${NC}"
+        echo
+        echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s client ${LOCAL_IP} ${KEY}"
+        echo
+        echo -e "${YELLOW}Key: ${KEY}${NC}"
+    fi
+
+    echo -e "${CYAN}Useful commands:${NC}"
+    echo "  systemctl status ${SERVICE_NAME}"
+    echo "  systemctl restart ${SERVICE_NAME}"
+    echo "  journalctl -u ${SERVICE_NAME} -f"
+    echo
+
+    sleep 1
+    systemctl status "$SERVICE_NAME" --no-pager -l 2>/dev/null || true
+}
+
+detect_network
+install_deps
+download_binary
+generate_key
+generate_config
+setup_iptables
+create_service
+print_summary
