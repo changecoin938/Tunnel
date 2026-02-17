@@ -16,7 +16,7 @@ set -euo pipefail
 REPO="changecoin938/Tunnel"
 REPO_URL="https://github.com/${REPO}.git"
 BRANCH="main"
-GO_MIN="1.23"
+GO_MIN="1.25"
 BUILD_DIR="/tmp/paqet-build"
 BIN_DIR="/usr/local/bin"
 LIB_DIR="/usr/local/lib/paqet"
@@ -129,17 +129,18 @@ install_go() {
     *) die "Unsupported arch: ${arch}" ;;
   esac
 
-  local go_ver="1.23.6"
+  local go_ver="1.25.0"
   local go_file="go${go_ver}.linux-${arch}.tar.gz"
   local -a mirrors=(
+    "https://github.com/golang/go/releases/download/go${go_ver}/${go_file}"
     "https://go.dev/dl/${go_file}"
     "https://dl.google.com/go/${go_file}"
     "https://mirrors.aliyun.com/golang/${go_file}"
-    "https://golang.google.cn/dl/${go_file}"
   )
   local ok=false
   for url in "${mirrors[@]}"; do
-    if curl -fsSL --connect-timeout 10 "${url}" -o /tmp/go.tar.gz 2>/dev/null; then
+    info "Trying ${url} ..."
+    if curl -fsSL --connect-timeout 15 "${url}" -o /tmp/go.tar.gz 2>/dev/null; then
       ok=true
       break
     fi
@@ -169,6 +170,7 @@ git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${BUILD_DIR}" 2>/dev/nul
 
 cd "${BUILD_DIR}"
 export GOPROXY="https://goproxy.io,https://proxy.golang.org,direct"
+export GOTOOLCHAIN=local
 CGO_ENABLED=1 go build -o paqet ./cmd
 [[ -f paqet ]] || die "Build failed"
 
