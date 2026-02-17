@@ -69,6 +69,12 @@ SOCKS5/Forward → client.TCP/UDP() → KCP+smux stream → server.handleStrm() 
 - [x] BUG-018 fixed in `internal/server/server.go` (timer leak — `time.After` → `time.NewTimer` + `Stop`)
 - [x] BUG-019 fixed in `internal/client/timed_conn.go` (closeConnKeepPacket — canonical `Close()` path)
 - [x] BUG-020 fixed in `internal/client/client.go` (WaitShutdown timer leak — same pattern as BUG-018)
+- [x] BUG-021 fixed in `internal/diag/diag.go` (data race on `enabled` bool → `atomic.Bool`)
+- [x] BUG-022 fixed in `internal/protocol/protocol.go` (write buffer overflow — `[512]byte` → `[1024]byte`)
+- [x] BUG-023 fixed in `internal/socks/socks.go` (nil pointer crash — discarded `ResolveTCPAddr` error)
+- [x] BUG-024 fixed in `cmd/run/client.go` (broken client state — `Infof` → `Fatalf` on Start failure)
+- [x] BUG-025 fixed in `internal/client/timed_conn.go` (sendTCPF missing write deadline — indefinite block)
+- [x] BUG-026 fixed in `internal/client/timed_conn.go` (reconnect sleep ignores shutdown — `time.Sleep` → `select`)
 
 ## 4. Optimization Tracker
 
@@ -189,6 +195,58 @@ Three parallel research agents audited all 82 Go files. Root causes identified a
 #### Cleanup
 - Removed ~70 macOS AppleDouble (`._*`) metadata files from project tree
 - Synced `scripts/paqet-install` (production installer) from Documents/GitHub version
+
+#### Verification
+- `go vet ./...` ✓
+- `go build ./...` ✓
+- `go test ./...` ✓
+
+### Session: 2026-02-17 (deep audit & hardening)
+
+Comprehensive deep audit of all 80+ Go source files. Three parallel agents reviewed every package.
+Six new bugs fixed plus dead code removal:
+
+#### BUG-021: Data race on `enabled` flag in diag package
+- **File**: `internal/diag/diag.go`
+- **Problem**: `var enabled bool` was read/written from multiple goroutines without synchronization — classic data race detectable by `-race`
+- **Fix**: Changed to `var enabled atomic.Bool`, all reads use `.Load()`, writes use `.Store()`
+
+#### BUG-022: Protocol write buffer overflow
+- **File**: `internal/protocol/protocol.go`
+- **Problem**: `Proto.Write()` used a `[512]byte` stack buffer, but max possible message is 770 bytes (2 header + 4 addr-length/port + 253 host + 1 TCPF-count + 255×2 TCPF entries). Writing a message with long host + many TCPF entries would panic with index-out-of-range
+- **Fix**: Increased buffer to `[1024]byte`
+
+#### BUG-023: SOCKS5 nil pointer crash on invalid listen address
+- **File**: `internal/socks/socks.go`
+- **Problem**: `net.ResolveTCPAddr` error was discarded (`listenAddr, _ := ...`). If resolution failed, `listenAddr` was nil → panic on `.String()` call
+- **Fix**: Proper error handling with `flog.Fatalf` on resolve failure
+
+#### BUG-024: Client continues in broken state after Start failure
+- **File**: `cmd/run/client.go`
+- **Problem**: `client.Start()` error was logged with `flog.Infof` (informational) instead of `flog.Fatalf`. If Start failed, SOCKS5 and Forward listeners were still set up on a non-functional client — silent data loss
+- **Fix**: Changed to `flog.Fatalf` to halt immediately on Start failure
+
+#### BUG-025: sendTCPF missing write deadline
+- **File**: `internal/client/timed_conn.go`
+- **Problem**: `sendTCPF()` opened a stream and wrote the TCPF protocol message with no write deadline. If the server was unresponsive, the write would block indefinitely — leaked goroutine + stuck connection
+- **Fix**: Added `SetWriteDeadline` using `HeaderTimeout` from config (fallback 10s), cleared after write
+
+#### BUG-026: reconnectLoop sleep ignores shutdown signal
+- **File**: `internal/client/timed_conn.go`
+- **Problem**: `time.Sleep(backoff + jitter)` in reconnect loop was non-cancellable. On SIGTERM, the process had to wait up to 30+ seconds for the sleep to finish before shutting down. **This was the root cause of the server upgrade delay** — old version held ports because `time.Sleep` blocked context cancellation
+- **Fix**: Replaced with `select { case <-ctx.Done(): ... case <-sleepTimer.C: }` — shutdown is now immediate
+
+#### Dead code removal
+- **Deleted** `internal/pkg/errors/errors.go` — contained function named `_` (uncallable dead code)
+- **Deleted** `internal/pkg/buffer/tcp.go` — `CopyT()` function never called anywhere in project
+- **Deleted** `internal/pkg/buffer/udp.go` — `CopyU()` function never called anywhere (the `CopyU` in `forward/udp.go` is a different local function)
+
+#### Deferred findings (not fixed — low priority or by design)
+- SSRF (server dials any client-requested address) — by design for tunnel proxy
+- Close order in `kcp/conn.go` (UDPSession before smux) — complex change, needs careful testing
+- pcap handle leaks on `SetDirection` failure — extremely rare error path
+- Server listener leak on partial init — rare startup failure path
+- `runtime.ReadMemStats` STW pause in diag endpoint — acceptable for debug endpoint
 
 #### Verification
 - `go vet ./...` ✓

@@ -27,7 +27,10 @@ func (s *SOCKS5) Start(ctx context.Context, cfg conf.SOCKS5) error {
 }
 
 func (s *SOCKS5) listen(ctx context.Context, cfg conf.SOCKS5) error {
-	listenAddr, _ := net.ResolveTCPAddr("tcp", cfg.Listen.String())
+	listenAddr, err := net.ResolveTCPAddr("tcp", cfg.Listen.String())
+	if err != nil {
+		flog.Fatalf("SOCKS5 failed to resolve listen address %s: %v", cfg.Listen.String(), err)
+	}
 	server, err := socks5.NewClassicServer(listenAddr.String(), listenAddr.IP.String(), cfg.Username, cfg.Password, 10, 10)
 	if err != nil {
 		flog.Fatalf("SOCKS5 server failed to create on %s: %v", listenAddr.String(), err)

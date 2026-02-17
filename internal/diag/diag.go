@@ -14,10 +14,10 @@ const rawLastAtSampleMask = 63 // sample once per 64 packets
 
 // enabled controls whether diag counters are active.
 // Keep this false in production unless you need /debug/paqet/* endpoints or counters.
-var enabled bool
+var enabled atomic.Bool
 
-func Enable(v bool) { enabled = v }
-func Enabled() bool { return enabled }
+func Enable(v bool) { enabled.Store(v) }
+func Enabled() bool { return enabled.Load() }
 
 type ConfigInfo struct {
 	Role      string `json:"role,omitempty"`
@@ -135,40 +135,40 @@ type Status struct {
 }
 
 func SetConfig(info ConfigInfo) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	cfg.Store(&info)
 }
 
 func IncSessions() {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	sessions.Add(1)
 }
 func DecSessions() {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	sessions.Add(-1)
 }
 
 func IncStreams() {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	streams.Add(1)
 }
 func DecStreams() {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	streams.Add(-1)
 }
 
 func AddRawUp(n int) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	if n > 0 {
@@ -181,7 +181,7 @@ func AddRawUp(n int) {
 }
 
 func AddRawUpDrop(n int) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	rawUpDrops.Add(1)
@@ -191,7 +191,7 @@ func AddRawUpDrop(n int) {
 }
 
 func AddRawDown(n int) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	if n > 0 {
@@ -204,7 +204,7 @@ func AddRawDown(n int) {
 }
 
 func AddRawDownOversizeDrop(n int) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	rawDownOversizeDrops.Add(1)
@@ -216,7 +216,7 @@ func AddRawDownOversizeDrop(n int) {
 }
 
 func AddRawDownCoalesced(parts int) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	rawDownCoalescedFrames.Add(1)
@@ -226,33 +226,33 @@ func AddRawDownCoalesced(parts int) {
 }
 
 func AddGuardPass() {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	guardPass.Add(1)
 }
 func AddGuardDrop() {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	guardDrops.Add(1)
 }
 
 func AddEnobufsRetry() {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	enobufsRetries.Add(1)
 }
 func AddEnobufsSustained() {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	enobufsSustained.Add(1)
 }
 
 func AddTCPUp(n int64) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	if n > 0 {
@@ -260,7 +260,7 @@ func AddTCPUp(n int64) {
 	}
 }
 func AddTCPDown(n int64) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	if n > 0 {
@@ -268,7 +268,7 @@ func AddTCPDown(n int64) {
 	}
 }
 func AddUDPUp(n int64) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	if n > 0 {
@@ -276,7 +276,7 @@ func AddUDPUp(n int64) {
 	}
 }
 func AddUDPDown(n int64) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	if n > 0 {
@@ -285,7 +285,7 @@ func AddUDPDown(n int64) {
 }
 
 func SetPing(rtt time.Duration, err error) {
-	if !enabled {
+	if !enabled.Load() {
 		return
 	}
 	now := time.Now()

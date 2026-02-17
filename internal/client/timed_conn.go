@@ -267,8 +267,16 @@ func (tc *timedConn) reconnectLoop() (tnet.Conn, error) {
 			nextLog = now.Add(60 * time.Second)
 		}
 		// Add jitter (±25%) to prevent thundering-herd when multiple connections reconnect simultaneously.
+		// Use a timer+select so context cancellation is respected during sleep.
 		jitter := time.Duration(rand.Int63n(int64(backoff / 2)))
-		time.Sleep(backoff + jitter - backoff/4)
+		sleepDur := backoff + jitter - backoff/4
+		sleepTimer := time.NewTimer(sleepDur)
+		select {
+		case <-tc.ctx.Done():
+			sleepTimer.Stop()
+			return nil, tc.ctx.Err()
+		case <-sleepTimer.C:
+		}
 		if backoff < 30*time.Second {
 			backoff *= 2
 			if backoff > 30*time.Second {
@@ -311,12 +319,16 @@ func (tc *timedConn) sendTCPF(conn tnet.Conn) error {
 	}
 	defer strm.Close()
 
+	// Set a write deadline to prevent blocking indefinitely on a half-broken connection.
+	if tc.cfg.Transport.KCP != nil && tc.cfg.Transport.KCP.HeaderTimeout > 0 {
+		_ = strm.SetWriteDeadline(time.Now().Add(time.Duration(tc.cfg.Transport.KCP.HeaderTimeout) * time.Second))
+	} else {
+		_ = strm.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	}
 	p := protocol.Proto{Type: protocol.PTCPF, TCPF: tc.cfg.Network.TCP.RF}
 	err = p.Write(strm)
-	if err != nil {
-		return err
-	}
-	return nil
+	_ = strm.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (tc *timedConn) close() {
