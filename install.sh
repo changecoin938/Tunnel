@@ -429,15 +429,16 @@ create_service() {
 #!/usr/bin/env bash
 set -euo pipefail
 PORT=${PORT}
-action="$1"
-if [[ "$action" == "start" ]]; then
-    iptables -t raw -C PREROUTING -p tcp --dport "$PORT" -j NOTRACK 2>/dev/null || iptables -t raw -A PREROUTING -p tcp --dport "$PORT" -j NOTRACK
-    iptables -t raw -C OUTPUT -p tcp --sport "$PORT" -j NOTRACK 2>/dev/null || iptables -t raw -A OUTPUT -p tcp --sport "$PORT" -j NOTRACK
-    iptables -t mangle -C OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -A OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP
-elif [[ "$action" == "stop" ]]; then
-    iptables -t raw -D PREROUTING -p tcp --dport "$PORT" -j NOTRACK 2>/dev/null || true
-    iptables -t raw -D OUTPUT -p tcp --sport "$PORT" -j NOTRACK 2>/dev/null || true
-    iptables -t mangle -D OUTPUT -p tcp --sport "$PORT" --tcp-flags RST RST -j DROP 2>/dev/null || true
+action="\${1:-}"
+if [[ -z "\$action" ]]; then exit 0; fi
+if [[ "\$action" == "start" ]]; then
+    iptables -t raw -C PREROUTING -p tcp --dport "\$PORT" -j NOTRACK 2>/dev/null || iptables -t raw -A PREROUTING -p tcp --dport "\$PORT" -j NOTRACK
+    iptables -t raw -C OUTPUT -p tcp --sport "\$PORT" -j NOTRACK 2>/dev/null || iptables -t raw -A OUTPUT -p tcp --sport "\$PORT" -j NOTRACK
+    iptables -t mangle -C OUTPUT -p tcp --sport "\$PORT" --tcp-flags RST RST -j DROP 2>/dev/null || iptables -t mangle -A OUTPUT -p tcp --sport "\$PORT" --tcp-flags RST RST -j DROP
+elif [[ "\$action" == "stop" ]]; then
+    iptables -t raw -D PREROUTING -p tcp --dport "\$PORT" -j NOTRACK 2>/dev/null || true
+    iptables -t raw -D OUTPUT -p tcp --sport "\$PORT" -j NOTRACK 2>/dev/null || true
+    iptables -t mangle -D OUTPUT -p tcp --sport "\$PORT" --tcp-flags RST RST -j DROP 2>/dev/null || true
 fi
 IPTSH
         chmod +x "${CONFIG_DIR}/iptables.sh"
@@ -445,8 +446,8 @@ IPTSH
 
     local extra_exec=""
     if [[ "$ROLE" == "server" ]]; then
-        extra_exec="ExecStartPre=${CONFIG_DIR}/iptables.sh start
-ExecStopPost=${CONFIG_DIR}/iptables.sh stop"
+        extra_exec="ExecStartPre=/bin/bash ${CONFIG_DIR}/iptables.sh start
+ExecStopPost=/bin/bash ${CONFIG_DIR}/iptables.sh stop"
     fi
 
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT

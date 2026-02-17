@@ -38,3 +38,9 @@ This file is updated after each push/release.
 - Added pre-download asset existence validation using HTTP HEAD checks.
 - Added automatic fallback to older releases when the newest tag exists but its assets are not yet published (or workflow failed).
 - Kept multi-method download fallback chain (direct URL -> API asset -> wget).
+
+### Release v1.0.24
+- Fixed installer-generated `iptables.sh` variable expansion issue in heredoc (escaped runtime variables so `$1` is not expanded by parent script).
+- Added safe action parsing in `iptables.sh` with `action="${1:-}"` and empty-arg no-op guard.
+- Updated systemd hooks to run helper via `/bin/bash` in `ExecStartPre`/`ExecStopPost`.
+- Prevented installer crash path that blocked summary output (client command/key visibility restored).
