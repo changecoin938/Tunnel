@@ -68,11 +68,11 @@ prompt_value() {
   if [[ -n "${current}" ]]; then return; fi
   if [[ -n "${default}" ]]; then
     ask "${prompt} [${default}]: "
-    read -r val
+    read -r val </dev/tty
     val="${val:-${default}}"
   else
     ask "${prompt}: "
-    read -r val
+    read -r val </dev/tty
   fi
   eval "${varname}='${val}'"
 }
