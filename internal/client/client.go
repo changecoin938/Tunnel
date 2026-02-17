@@ -15,6 +15,11 @@ type Client struct {
 	iter    *iterator.Iterator[*timedConn]
 	udpPool *udpPool
 
+	// connReady is closed+recreated whenever any timedConn finishes reconnecting.
+	// newStrm waits on this instead of busy-polling every 50ms.
+	connReadyMu sync.Mutex
+	connReady   chan struct{}
+
 	shutdownDone chan struct{}
 	shutdownOnce sync.Once
 }
@@ -28,15 +33,33 @@ func New(cfg *conf.Conf) (*Client, error) {
 			maxEntries:  udpPoolMaxEntriesDefault,
 			idleTimeout: udpPoolIdleTimeoutDefault,
 		},
+		connReady:    make(chan struct{}),
 		shutdownDone: make(chan struct{}),
 	}
 	return c, nil
 }
 
+// notifyConnReady signals any goroutines waiting in newStrm that a connection
+// may now be available. Called by timedConn after a successful reconnect.
+func (c *Client) notifyConnReady() {
+	c.connReadyMu.Lock()
+	close(c.connReady)
+	c.connReady = make(chan struct{})
+	c.connReadyMu.Unlock()
+}
+
+// getConnReady returns the current connReady channel for waiting.
+func (c *Client) getConnReady() <-chan struct{} {
+	c.connReadyMu.Lock()
+	ch := c.connReady
+	c.connReadyMu.Unlock()
+	return ch
+}
+
 func (c *Client) Start(ctx context.Context) error {
 	items := make([]*timedConn, 0, c.cfg.Transport.Conn)
 	for i := range c.cfg.Transport.Conn {
-		tc, err := newTimedConn(ctx, c.cfg, i)
+		tc, err := newTimedConn(ctx, c.cfg, i, c)
 		if tc == nil {
 			// Fatal config error (e.g., port range too large).
 			return err
@@ -86,10 +109,12 @@ func (c *Client) WaitShutdown(timeout time.Duration) bool {
 		<-c.shutdownDone
 		return true
 	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-c.shutdownDone:
 		return true
-	case <-time.After(timeout):
+	case <-timer.C:
 		return false
 	}
 }

@@ -65,6 +65,14 @@ func BidiCopy(ctx context.Context, a net.Conn, b net.Conn, f1 func() error, f2 f
 			errs[res.idx] = res.err
 			got++
 		case <-shutdownTimer.C:
+			// Force-close both connections to guarantee stuck goroutines unblock.
+			// SetDeadline may not be sufficient if io.Copy is stuck in a kernel splice path.
+			if a != nil {
+				_ = a.Close()
+			}
+			if b != nil {
+				_ = b.Close()
+			}
 			if errs[0] == nil {
 				errs[0] = fmt.Errorf("bidi copy timeout waiting for goroutine shutdown")
 			}

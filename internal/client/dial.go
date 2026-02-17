@@ -20,6 +20,7 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 	// This is especially important during reinstall/restart where tunnel dials happen
 	// in background and may take a few seconds.
 	deadline := time.Now().Add(3 * time.Second)
+	kicked := false
 	for {
 		n := len(c.iter.Items)
 		for i := 0; i < n; i++ {
@@ -30,7 +31,9 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 
 			conn := tc.getConn()
 			if conn == nil {
-				tc.kickReconnect()
+				if !kicked {
+					tc.kickReconnect()
+				}
 				continue
 			}
 
@@ -42,10 +45,22 @@ func (c *Client) newStrm() (tnet.Strm, error) {
 			flog.Debugf("failed to open stream, reconnecting in background: %v", err)
 			tc.markBroken(conn)
 		}
+		kicked = true // Only kick reconnects once to avoid thundering-herd.
 
 		if time.Now().After(deadline) {
 			return nil, errNoTunnelConnections
 		}
-		time.Sleep(50 * time.Millisecond)
+
+		// Wait for a connection to become ready instead of busy-polling.
+		// This reduces CPU usage and avoids thundering-herd reconnect storms.
+		remaining := time.Until(deadline)
+		waitTimer := time.NewTimer(remaining)
+		select {
+		case <-c.getConnReady():
+			waitTimer.Stop()
+			// A connection may be ready, retry immediately.
+		case <-waitTimer.C:
+			// Timeout reached, will check deadline at loop top.
+		}
 	}
 }

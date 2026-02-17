@@ -26,6 +26,7 @@ func Dial(addr *net.UDPAddr, cfg *conf.KCP, pConn *socket.PacketConn) (tnet.Conn
 
 	sess, err := smux.Client(conn, smuxConf(cfg))
 	if err != nil {
+		_ = conn.Close() // Close the KCP session to prevent goroutine/resource leak.
 		return nil, fmt.Errorf("failed to create smux session: %w", err)
 	}
 

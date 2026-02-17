@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"net"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
@@ -15,8 +16,9 @@ import (
 )
 
 type timedConn struct {
-	cfg *conf.Conf
-	ctx context.Context
+	cfg    *conf.Conf
+	ctx    context.Context
+	client *Client // back-reference to notify when reconnect succeeds
 
 	netCfg    conf.Network
 	connIndex int
@@ -27,8 +29,8 @@ type timedConn struct {
 	kickCh      chan struct{}
 }
 
-func newTimedConn(ctx context.Context, cfg *conf.Conf, connIndex int) (*timedConn, error) {
-	tc := &timedConn{cfg: cfg, ctx: ctx, netCfg: cfg.Network, connIndex: connIndex, kickCh: make(chan struct{}, 1)}
+func newTimedConn(ctx context.Context, cfg *conf.Conf, connIndex int, client *Client) (*timedConn, error) {
+	tc := &timedConn{cfg: cfg, ctx: ctx, client: client, netCfg: cfg.Network, connIndex: connIndex, kickCh: make(chan struct{}, 1)}
 	if err := tc.applyConnIndex(connIndex); err != nil {
 		return nil, err
 	}
@@ -132,13 +134,10 @@ func closeConnKeepPacket(conn tnet.Conn) {
 		return
 	}
 	// Avoid closing the raw PacketConn when we're doing "try port A, then port B" fallback.
+	// Use the canonical Close() path but skip PacketConn ownership to preserve it for reuse.
 	if kc, ok := conn.(*kcp.Conn); ok {
-		if kc.UDPSession != nil {
-			kc.UDPSession.Close()
-		}
-		if kc.Session != nil {
-			kc.Session.Close()
-		}
+		kc.OwnPacketConn = false
+		_ = kc.Close()
 		return
 	}
 	_ = conn.Close()
@@ -245,12 +244,17 @@ func (tc *timedConn) reconnect() error {
 		close(ch)
 		tc.mu.Unlock()
 
+		// Notify waiting newStrm() goroutines that a connection may be ready.
+		if err == nil && tc.client != nil {
+			tc.client.notifyConnReady()
+		}
+
 		return err
 	}
 }
 
 func (tc *timedConn) reconnectLoop() (tnet.Conn, error) {
-	backoff := 50 * time.Millisecond
+	backoff := 500 * time.Millisecond // Start with 500ms instead of 50ms to reduce connection churn.
 	nextLog := time.Now()
 	var lastErr error
 	for {
@@ -267,7 +271,9 @@ func (tc *timedConn) reconnectLoop() (tnet.Conn, error) {
 			flog.Warnf("tunnel connection %d reconnect failed (retrying): %v", tc.connIndex+1, lastErr)
 			nextLog = now.Add(60 * time.Second)
 		}
-		time.Sleep(backoff)
+		// Add jitter (±25%) to prevent thundering-herd when multiple connections reconnect simultaneously.
+		jitter := time.Duration(rand.Int63n(int64(backoff / 2)))
+		time.Sleep(backoff + jitter - backoff/4)
 		if backoff < 30*time.Second {
 			backoff *= 2
 			if backoff > 30*time.Second {
@@ -281,14 +287,21 @@ func (tc *timedConn) maintain() {
 	// Establish as soon as possible. Never block caller.
 	_ = tc.reconnect()
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
 	for {
+		// Use a long interval when connected (reduces CPU wakeups and battery drain),
+		// fall back to a shorter interval when the connection is broken so we notice faster.
+		interval := 30 * time.Second
+		if tc.getConn() == nil {
+			interval = 2 * time.Second
+		}
+		timer := time.NewTimer(interval)
 		select {
 		case <-tc.ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		case <-tc.kickCh:
+			timer.Stop()
 		}
 
 		if tc.getConn() == nil {

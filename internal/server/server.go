@@ -120,10 +120,12 @@ func (s *Server) Start() error {
 		s.wg.Wait()
 		close(done)
 	}()
+	shutdownTimer := time.NewTimer(10 * time.Second)
+	defer shutdownTimer.Stop()
 	select {
 	case <-done:
 		flog.Infof("Server shutdown completed")
-	case <-time.After(10 * time.Second):
+	case <-shutdownTimer.C:
 		flog.Warnf("Server shutdown timed out after 10s, forcing exit")
 	}
 	return nil
