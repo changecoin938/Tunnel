@@ -148,7 +148,7 @@ rm -rf "${BUILD_DIR}"
 git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${BUILD_DIR}" 2>/dev/null
 
 cd "${BUILD_DIR}"
-CGO_ENABLED=0 go build -o paqet .
+CGO_ENABLED=0 go build -o paqet ./cmd
 [[ -f paqet ]] || die "Build failed"
 
 PAQET_VERSION="$(./paqet version 2>/dev/null | head -1 | awk '{print $2}')" || true
