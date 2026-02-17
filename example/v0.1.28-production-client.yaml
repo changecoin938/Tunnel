@@ -1,0 +1,58 @@
+# paqet v0.1.28 — production client config
+# Tested with 500+ gRPC Reality users
+#
+# CHANGE THESE for your environment:
+#   1. network.interface        → your NIC name (ip link show)
+#   2. network.ipv4.addr        → IRAN_IP:20000
+#   3. network.ipv4.router_mac  → gateway MAC (ip neigh show default)
+#   4. server.addr              → KHAREJ_IP:9999
+#   5. transport.kcp.key        → shared secret (must match server)
+#   6. forward                  → your port mappings
+
+role: "client"
+
+log:
+  level: "warn"
+
+debug:
+  pprof: "127.0.0.1:6060"
+  diag: true
+
+network:
+  interface: "ens3"                       # ← your NIC
+  dscp: 0
+  ipv4:
+    addr: "IRAN_IP:20000"                 # ← Iran server public IP
+    router_mac: "aa:bb:cc:dd:ee:ff"       # ← gateway MAC
+  pcap:
+    sockbuf: 16777216                     # 16 MB
+    snaplen: 65535
+    promisc: false
+    immediate: true
+    timeout_ms: 0
+
+server:
+  addr: "KHAREJ_IP:9999"                  # ← Kharej server public IP
+
+transport:
+  protocol: "kcp"
+  conn: 10
+  kcp:
+    mode: "fast3"
+    mtu: 1350
+    rcvwnd: 8192
+    sndwnd: 8192
+    block: "aes"
+    key: "CHANGE-ME"                      # ← shared secret key
+    guard: true
+    guard_magic: "PQT1"
+    smuxbuf: 16777216                     # 16 MB
+    streambuf: 4194304                    # 4 MB
+
+forward:
+  - listen: "0.0.0.0:443"
+    target: "127.0.0.1:2443"
+    protocol: "tcp"
+  - listen: "127.0.0.1:5555"
+    target: "127.0.0.1:5555"
+    protocol: "tcp"
