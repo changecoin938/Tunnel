@@ -304,3 +304,15 @@ echo ""
 info "Done! Config: ${CONF_FILE}"
 info "Logs: journalctl -u paqet -f"
 echo ""
+
+# ─── Show client command if this is a server install ─────────────────────────
+if [[ "${ROLE}" == "server" ]]; then
+  INSTALL_URL="https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts/paqet-install"
+  echo ""
+  printf "${CYAN}══════════════════════════════════════════════════════${NC}\n"
+  printf "${CYAN} Copy this command and run it on IRAN (client) server:${NC}\n"
+  printf "${CYAN}══════════════════════════════════════════════════════${NC}\n"
+  echo ""
+  echo "curl -sL ${INSTALL_URL} | bash -s -- client ${IP} ${KEY}"
+  echo ""
+fi
