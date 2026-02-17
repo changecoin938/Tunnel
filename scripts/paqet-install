@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ###############################################################################
-# paqet-install  —  one-command installer for paqet v0.1.28
+# paqet-install  —  one-command installer for paqet v0.1.28 (rev2)
 #
 # Usage (on server):
-#   curl -sL https://raw.githubusercontent.com/changecoin938/Tunnel/main/scripts/paqet-install | bash
+#   curl -sL https://raw.githubusercontent.com/changecoin938/Tunnel/release/v0.1.28/scripts/paqet-install | bash
 #
 # Or with arguments:
 #   curl -sL ... | bash -s -- --role server --ip 167.235.152.44 --port 9999 \
@@ -62,27 +62,40 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ─── Interactive prompts (if args not given) ─────────────────────────────────
+# When piped via curl|bash, stdin is the pipe. We must read from /dev/tty.
+if [[ -t 0 ]]; then
+  TTY_IN="/dev/stdin"
+else
+  TTY_IN="/dev/tty"
+fi
+
 prompt_value() {
   local varname="$1" prompt="$2" default="$3"
   eval "local current=\${$varname}"
   if [[ -n "${current}" ]]; then return; fi
   if [[ -n "${default}" ]]; then
-    ask "${prompt} [${default}]: "
-    read -r val </dev/tty
+    ask "${prompt} [${default}]: " >/dev/tty
+    read -r val <"${TTY_IN}"
     val="${val:-${default}}"
   else
-    ask "${prompt}: "
-    read -r val </dev/tty
+    ask "${prompt}: " >/dev/tty
+    read -r val <"${TTY_IN}"
+  fi
+  if [[ -z "${val}" ]]; then
+    error "Value required for: ${prompt}"
+    exit 1
   fi
   eval "${varname}='${val}'"
 }
 
 if [[ -z "${ROLE}" ]]; then
-  echo ""
-  printf "${CYAN}╔══════════════════════════════════════════╗${NC}\n"
-  printf "${CYAN}║     paqet ${VERSION} Installer              ║${NC}\n"
-  printf "${CYAN}╚══════════════════════════════════════════╝${NC}\n"
-  echo ""
+  {
+    echo ""
+    printf "${CYAN}╔══════════════════════════════════════════╗${NC}\n"
+    printf "${CYAN}║     paqet ${VERSION} Installer              ║${NC}\n"
+    printf "${CYAN}╚══════════════════════════════════════════╝${NC}\n"
+    echo ""
+  } >/dev/tty
 fi
 
 prompt_value ROLE "Role (server / client)" ""
