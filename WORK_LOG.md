@@ -32,3 +32,9 @@ This file is updated after each push/release.
 - Download now tries: direct release URL -> GitHub API asset endpoint -> `wget` fallback.
 - Added curl timeout controls and explicit failure guidance for blocked CDN environments.
 - Added `wget` to dependency install list for apt/yum/apk paths.
+
+### Release v1.0.23
+- Improved release selection in `install.sh` to prefer the newest release that actually has an asset for the current architecture.
+- Added pre-download asset existence validation using HTTP HEAD checks.
+- Added automatic fallback to older releases when the newest tag exists but its assets are not yet published (or workflow failed).
+- Kept multi-method download fallback chain (direct URL -> API asset -> wget).

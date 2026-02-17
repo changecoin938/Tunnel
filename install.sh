@@ -197,26 +197,68 @@ CONN=$(calc_conn)
 download_binary() {
     echo -e "${CYAN}Downloading paqet binary...${NC}"
 
-    local tag
-    tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4)
+    local filename_base="paqet-linux-${ARCH}"
+    local tag=""
+    local releases_json
+    releases_json=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=10" 2>/dev/null || true)
 
-    if [[ -z "$tag" ]]; then
-        echo -e "${YELLOW}No release found, trying latest tag...${NC}"
-        tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/tags" 2>/dev/null | grep '"name"' | head -1 | cut -d'"' -f4)
+    if [[ -n "$releases_json" ]]; then
+        local candidate
+        while IFS= read -r candidate; do
+            [[ -z "$candidate" ]] && continue
+            local check_url="https://github.com/${REPO}/releases/download/${candidate}/${filename_base}-${candidate}.tar.gz"
+            if curl -fsSLI --connect-timeout 10 --max-time 20 "$check_url" >/dev/null 2>&1; then
+                tag="$candidate"
+                break
+            fi
+        done < <(printf '%s\n' "$releases_json" | grep '"tag_name"' | cut -d'"' -f4)
     fi
 
     if [[ -z "$tag" ]]; then
-        echo -e "${RED}Error: cannot find any release or tag${NC}" >&2
+        tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | cut -d'"' -f4 || true)
+    fi
+
+    if [[ -z "$tag" ]]; then
+        echo -e "${RED}Error: cannot find any release${NC}" >&2
         exit 1
     fi
 
     echo -e "${GREEN}Release: ${tag}${NC}"
 
-    local filename="paqet-linux-${ARCH}-${tag}.tar.gz"
+    local filename="${filename_base}-${tag}.tar.gz"
     local url="https://github.com/${REPO}/releases/download/${tag}/${filename}"
     local tmp_dir
     tmp_dir=$(mktemp -d)
     local ok=false
+
+    # Validate selected release has the binary asset. If not, walk older releases.
+    if ! curl -fsSLI --connect-timeout 10 --max-time 20 "$url" >/dev/null 2>&1; then
+        echo -e "${YELLOW}Release ${tag} has no binary, searching older releases...${NC}"
+        local found=false
+        if [[ -z "$releases_json" ]]; then
+            releases_json=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=10" 2>/dev/null || true)
+        fi
+        if [[ -n "$releases_json" ]]; then
+            local older_tag
+            while IFS= read -r older_tag; do
+                [[ -z "$older_tag" || "$older_tag" == "$tag" ]] && continue
+                local check="https://github.com/${REPO}/releases/download/${older_tag}/${filename_base}-${older_tag}.tar.gz"
+                if curl -fsSLI --connect-timeout 10 --max-time 20 "$check" >/dev/null 2>&1; then
+                    tag="$older_tag"
+                    filename="${filename_base}-${tag}.tar.gz"
+                    url="https://github.com/${REPO}/releases/download/${tag}/${filename}"
+                    found=true
+                    echo -e "${GREEN}Found working release: ${tag}${NC}"
+                    break
+                fi
+            done < <(printf '%s\n' "$releases_json" | grep '"tag_name"' | cut -d'"' -f4)
+        fi
+        if [[ "$found" == false ]]; then
+            echo -e "${RED}Error: no release has binary for ${ARCH}${NC}" >&2
+            rm -rf "$tmp_dir"
+            exit 1
+        fi
+    fi
 
     echo -e "${CYAN}Downloading: ${url}${NC}"
     if curl -fsSL --connect-timeout 15 --max-time 120 "$url" -o "${tmp_dir}/paqet.tar.gz" 2>/dev/null; then
