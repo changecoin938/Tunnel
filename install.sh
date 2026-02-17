@@ -427,10 +427,9 @@ create_service() {
     if [[ "$ROLE" == "server" ]]; then
         cat > "${CONFIG_DIR}/iptables.sh" <<IPTSH
 #!/usr/bin/env bash
-set -euo pipefail
-PORT=${PORT}
 action="\${1:-}"
 if [[ -z "\$action" ]]; then exit 0; fi
+PORT=${PORT}
 if [[ "\$action" == "start" ]]; then
     iptables -t raw -C PREROUTING -p tcp --dport "\$PORT" -j NOTRACK 2>/dev/null || iptables -t raw -A PREROUTING -p tcp --dport "\$PORT" -j NOTRACK
     iptables -t raw -C OUTPUT -p tcp --sport "\$PORT" -j NOTRACK 2>/dev/null || iptables -t raw -A OUTPUT -p tcp --sport "\$PORT" -j NOTRACK
