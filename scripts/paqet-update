@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="changecoin938/Tunnel"
+BIN="/usr/local/bin/paqet"
+SERVICE="paqet"
+
+need_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    exec sudo -E "$0" "$@"
+  fi
+}
+
+need_root "$@"
+
+ARCH="$(uname -m)"
+case "${ARCH}" in
+  x86_64|amd64) ASSET="paqet-linux-amd64" ;;
+  aarch64|arm64) ASSET="paqet-linux-arm64" ;;
+  *) echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;;
+esac
+
+TAG="${1:-latest}"
+if [[ "${TAG}" == "latest" ]]; then
+  TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)"
+  if [[ -z "${TAG}" ]]; then
+    echo "Failed to resolve latest release tag" >&2
+    exit 1
+  fi
+fi
+
+URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+echo "Downloading ${ASSET} (${TAG}) ..."
+
+TMP="$(mktemp)"
+cleanup() {
+  rm -f "${TMP}"
+}
+trap cleanup EXIT
+
+HTTP_CODE="$(curl -fsSL -o "${TMP}" -w "%{http_code}" "${URL}")"
+if [[ "${HTTP_CODE}" != "200" ]]; then
+  echo "Download failed (HTTP ${HTTP_CODE}). Verify release assets for ${TAG}." >&2
+  exit 1
+fi
+
+if command -v file >/dev/null 2>&1; then
+  FILE_TYPE="$(file -b "${TMP}")"
+  if [[ "${FILE_TYPE}" != *ELF* ]]; then
+    echo "Downloaded file is not an ELF binary: ${FILE_TYPE}" >&2
+    exit 1
+  fi
+else
+  MAGIC="$(head -c4 "${TMP}" | od -An -t x1 | tr -d ' \n')"
+  if [[ "${MAGIC}" != "7f454c46" ]]; then
+    echo "Downloaded file is not an ELF binary (magic=${MAGIC})" >&2
+    exit 1
+  fi
+fi
+
+echo "Stopping ${SERVICE} ..."
+systemctl stop "${SERVICE}" 2>/dev/null || true
+
+install -m 0755 "${TMP}" "${BIN}"
+
+echo "Starting ${SERVICE} ..."
+systemctl start "${SERVICE}"
+
+echo "Updated successfully:"
+"${BIN}" version

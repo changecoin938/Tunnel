@@ -78,6 +78,7 @@ jobs:
                     install.sh \
                     scripts/paqet-ui \
                     scripts/paqet-rootcause \
+                    scripts/paqet-update \
                     scripts/paqet-iptables.sh \
                     scripts/paqet-systemd-iptables.sh \
                     example/client.yaml.example \

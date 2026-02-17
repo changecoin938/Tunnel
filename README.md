@@ -67,6 +67,20 @@ This installs `paqet` and launches `paqet-ui`, where you can pick:
 > For the one-liner to work, your repo must publish release assets named:
 > `paqet-linux-amd64.tar.gz` and/or `paqet-linux-arm64.tar.gz`.
 
+### Update on Server (One Command)
+
+After installation, you can update to the latest release with:
+
+```bash
+sudo paqet-update
+```
+
+Or pin a specific tag:
+
+```bash
+sudo paqet-update v1.0.3
+```
+
 ### 2. Configure the Connection
 
 paqet uses a unified configuration approach with role-based settings. Copy and modify either:

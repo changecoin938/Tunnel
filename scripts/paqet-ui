@@ -523,6 +523,12 @@ EOF
   systemctl daemon-reload
   systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1 || true
   install_watchdog
+
+  # Install updater helper if packaged by installer.
+  if [[ -f "${LIB_DIR}/paqet-update" ]]; then
+    cp "${LIB_DIR}/paqet-update" /usr/local/bin/paqet-update
+    chmod +x /usr/local/bin/paqet-update
+  fi
 }
 
 start_service() {
@@ -1251,7 +1257,7 @@ purge_all() {
   sysctl --system >/dev/null 2>&1 || true
 
   # Remove binaries + scripts
-  rm -f "${BIN}" /usr/local/bin/paqet-ui /usr/local/bin/paqet-rootcause || true
+  rm -f "${BIN}" /usr/local/bin/paqet-ui /usr/local/bin/paqet-rootcause /usr/local/bin/paqet-update || true
   rm -rf "${LIB_DIR}" || true
 
   msg "Purge completed."

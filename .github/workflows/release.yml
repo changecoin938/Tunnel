@@ -1,0 +1,77 @@
+name: Release Binaries
+
+on:
+    release:
+        types: [created]
+
+permissions:
+    contents: write
+
+jobs:
+    build-linux:
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                include:
+                    - goarch: amd64
+                      asset: paqet-linux-amd64
+                    - goarch: arm64
+                      asset: paqet-linux-arm64
+
+        steps:
+            - name: Checkout release tag
+              uses: actions/checkout@v5
+              with:
+                  ref: refs/tags/${{ github.event.release.tag_name }}
+                  fetch-depth: 0
+
+            - name: Setup Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: "1.25"
+
+            - name: Setup build deps
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  sudo apt-get update
+                  if [ "${{ matrix.goarch }}" = "arm64" ]; then
+                    sudo dpkg --add-architecture arm64
+                    sudo apt-get update
+                    sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross libpcap-dev:arm64
+                  else
+                    sudo apt-get install -y --no-install-recommends build-essential libpcap-dev
+                  fi
+
+            - name: Build binary
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  mkdir -p dist
+                  export GOOS=linux
+                  export GOARCH=${{ matrix.goarch }}
+                  export CGO_ENABLED=1
+                  export VERSION="${{ github.event.release.tag_name }}"
+                  export GIT_TAG="${{ github.event.release.tag_name }}"
+                  export GIT_COMMIT="$(git rev-parse HEAD)"
+                  export BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+                  if [ "$GOARCH" = "arm64" ]; then
+                    export CC=aarch64-linux-gnu-gcc
+                  fi
+
+                  go build -v -a -trimpath \
+                    -ldflags "-s -w -buildid= \
+                    -X 'paqet/cmd/version.Version=${VERSION}' \
+                    -X 'paqet/cmd/version.GitCommit=${GIT_COMMIT}' \
+                    -X 'paqet/cmd/version.GitTag=${GIT_TAG}' \
+                    -X 'paqet/cmd/version.BuildTime=${BUILD_TIME}'" \
+                    -o "dist/${{ matrix.asset }}" ./cmd/main.go
+
+            - name: Upload binary to release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  gh release upload "${{ github.event.release.tag_name }}" "dist/${{ matrix.asset }}" --clobber
+
