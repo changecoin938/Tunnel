@@ -74,16 +74,29 @@ IFACE="${IFACE:-$(ip -o route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++)
 IP="${IP:-$(ip -4 addr show "${IFACE}" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')}"
 [[ -n "${IP}" ]] || die "Cannot detect IP on ${IFACE}. Set IP= env var"
 
-# Gateway MAC
+# Gateway MAC — try multiple methods
 if [[ -z "${MAC:-}" ]]; then
-  GW_IP="$(ip route show default dev "${IFACE}" 2>/dev/null | awk '{print $3; exit}')"
+  # Method 1: get gateway IP from default route, then ARP lookup
+  GW_IP="$(ip route show default 2>/dev/null | awk '/via/{print $3; exit}')"
   if [[ -n "${GW_IP}" ]]; then
-    # Ping gateway to make sure ARP entry exists
-    ping -c1 -W1 "${GW_IP}" >/dev/null 2>&1 || true
-    MAC="$(ip neigh show "${GW_IP}" dev "${IFACE}" 2>/dev/null | awk '{print $5; exit}')"
+    ping -c1 -W2 "${GW_IP}" >/dev/null 2>&1 || true
+    sleep 1
+    MAC="$(ip neigh show "${GW_IP}" 2>/dev/null | awk '{print $5; exit}')"
+  fi
+  # Method 2: any reachable neighbor on the interface
+  if [[ -z "${MAC:-}" ]]; then
+    MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | awk '/REACHABLE|STALE|DELAY/{print $5; exit}')"
+  fi
+  # Method 3: any neighbor at all on the interface
+  if [[ -z "${MAC:-}" ]]; then
+    MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | awk 'NF>=5{print $5; exit}')"
+  fi
+  # Method 4: use arping if available
+  if [[ -z "${MAC:-}" && -n "${GW_IP:-}" ]] && command -v arping >/dev/null 2>&1; then
+    MAC="$(arping -c1 -I "${IFACE}" "${GW_IP}" 2>/dev/null | awk -F'[][]' '/reply/{print $2; exit}')"
   fi
 fi
-[[ -n "${MAC:-}" ]] || die "Cannot detect gateway MAC. Set MAC= env var"
+[[ -n "${MAC:-}" ]] || die "Cannot detect gateway MAC. Set MAC= env var or run: ip neigh"
 
 # Ports
 PORT="${PORT:-9999}"
