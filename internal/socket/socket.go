@@ -372,40 +372,28 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 	// Note: returning a non-nil error here will cause kcp-go to tear down the
 	// session. For transient ENOBUFS/ENOMEM we must keep the session alive.
 	//
-	// Retry with exponential backoff before giving up — a single retry often
-	// succeeds once the kernel drains its buffer, avoiding unnecessary packet loss.
-	writeOnce := func() error {
-		if prefix != nil {
-			return c.sendHandle.WriteParts(prefix, data, daddr)
-		}
-		return c.sendHandle.Write(data, daddr)
+	// IMPORTANT: Never sleep here. With 500+ concurrent users all writing through
+	// shared pcap handles, sleeping blocks the goroutine and cascades to all other
+	// streams sharing this handle. KCP will retransmit lost packets automatically.
+	if prefix != nil {
+		err = c.sendHandle.WriteParts(prefix, data, daddr)
+	} else {
+		err = c.sendHandle.Write(data, daddr)
 	}
-
-	backoff := 200 * time.Microsecond
-	for attempt := 0; attempt < 8; attempt++ {
-		err = writeOnce()
-		if err == nil {
-			diag.AddRawUp(wireLen)
-			return len(data), nil
-		}
-		// libpcap returns plain string errors via pcap_geterr (no errno), so also
-		// match by message to detect ENOBUFS/ENOMEM.
-		if errors.Is(err, syscall.ENOBUFS) ||
-			errors.Is(err, syscall.ENOMEM) ||
-			strings.Contains(err.Error(), "No buffer space available") ||
-			strings.Contains(err.Error(), "Cannot allocate memory") {
-			diag.AddEnobufsRetry()
-			time.Sleep(backoff)
-			if backoff < 10*time.Millisecond {
-				backoff *= 2
-			}
-			continue
-		}
-		return 0, err
+	if err == nil {
+		diag.AddRawUp(wireLen)
+		return len(data), nil
 	}
-	// Exhausted retries — treat as packet loss (report success to keep KCP session alive).
-	diag.AddRawUpDrop(wireLen)
-	return len(data), nil
+	// libpcap returns plain string errors via pcap_geterr (no errno), so also
+	// match by message to detect ENOBUFS/ENOMEM.
+	if errors.Is(err, syscall.ENOBUFS) ||
+		errors.Is(err, syscall.ENOMEM) ||
+		strings.Contains(err.Error(), "No buffer space available") ||
+		strings.Contains(err.Error(), "Cannot allocate memory") {
+		diag.AddRawUpDrop(wireLen)
+		return len(data), nil
+	}
+	return 0, err
 }
 
 func (c *PacketConn) Close() error {

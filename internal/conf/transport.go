@@ -2,6 +2,7 @@ package conf
 
 import (
 	"fmt"
+	"runtime"
 	"slices"
 )
 
@@ -13,7 +14,17 @@ type Transport struct {
 
 func (t *Transport) setDefaults(role string) {
 	if t.Conn == 0 {
-		t.Conn = 2
+		// Default to NumCPU pcap handles. Each handle has its own kernel buffer
+		// and lock, so more handles = less contention under high concurrency.
+		// On a 4-core server with 500 users, 4 handles reduce per-handle load
+		// from 250 users/handle (conn=2) to 125 users/handle.
+		t.Conn = runtime.NumCPU()
+		if t.Conn < 2 {
+			t.Conn = 2
+		}
+		if t.Conn > 16 {
+			t.Conn = 16
+		}
 	}
 	switch t.Protocol {
 	case "kcp":

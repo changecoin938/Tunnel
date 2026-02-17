@@ -111,25 +111,18 @@ func CopyU(dst io.ReadWriter, src *net.UDPConn, addr *net.UDPAddr, buf []byte) e
 		return err
 	}
 
-	backoff := 200 * time.Microsecond
-	for attempt := 0; attempt < 12; attempt++ {
-		_, err = src.WriteToUDP(buf[:n], addr)
-		if err == nil {
-			diag.AddUDPDown(int64(n))
-			return nil
-		}
-		if errors.Is(err, syscall.ENOBUFS) ||
-			errors.Is(err, syscall.ENOMEM) ||
-			strings.Contains(err.Error(), "No buffer space available") ||
-			strings.Contains(err.Error(), "Cannot allocate memory") {
-			time.Sleep(backoff)
-			if backoff < 10*time.Millisecond {
-				backoff *= 2
-			}
-			continue
-		}
-		return err
+	_, err = src.WriteToUDP(buf[:n], addr)
+	if err == nil {
+		diag.AddUDPDown(int64(n))
+		return nil
 	}
-	// Treat persistent ENOBUFS/ENOMEM as packet loss for UDP to avoid tearing down the stream.
-	return nil
+	// ENOBUFS/ENOMEM = packet loss, acceptable for UDP. Never sleep — with 500
+	// users, sleeping cascades and blocks all streams sharing this goroutine.
+	if errors.Is(err, syscall.ENOBUFS) ||
+		errors.Is(err, syscall.ENOMEM) ||
+		strings.Contains(err.Error(), "No buffer space available") ||
+		strings.Contains(err.Error(), "Cannot allocate memory") {
+		return nil
+	}
+	return err
 }

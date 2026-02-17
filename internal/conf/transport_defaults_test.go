@@ -1,11 +1,21 @@
 package conf
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
-func TestTransportSetDefaults_ConnDefaultsTo2(t *testing.T) {
+func TestTransportSetDefaults_ConnDefaultsToNumCPU(t *testing.T) {
 	tp := &Transport{Protocol: "kcp"}
 	tp.setDefaults("client")
-	if tp.Conn != 2 {
-		t.Fatalf("expected conn default 2, got %d", tp.Conn)
+	want := runtime.NumCPU()
+	if want < 2 {
+		want = 2
+	}
+	if want > 16 {
+		want = 16
+	}
+	if tp.Conn != want {
+		t.Fatalf("expected conn default %d (NumCPU), got %d", want, tp.Conn)
 	}
 }
