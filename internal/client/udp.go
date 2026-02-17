@@ -47,6 +47,13 @@ func (c *Client) UDP(lAddr, tAddr string) (tnet.Strm, bool, uint64, error) {
 	tracked.touch()
 	var toClose []*udpTrackedStrm
 	c.udpPool.mu.Lock()
+	if existing, exists := c.udpPool.strms[key]; exists && existing != nil {
+		c.udpPool.mu.Unlock()
+		_ = tracked.Close()
+		existing.touch()
+		flog.Debugf("reusing UDP stream %d for %s -> %s (raced create avoided)", existing.SID(), lAddr, tAddr)
+		return existing, false, key, nil
+	}
 	// Best-effort: if the pool grows too large due to abusive UDP fan-out, evict idle entries.
 	if c.udpPool.maxEntries == 0 {
 		c.udpPool.maxEntries = udpPoolMaxEntriesDefault

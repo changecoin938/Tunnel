@@ -33,6 +33,13 @@ type PacketConn struct {
 	pendingAddr net.Addr
 	bufPool     sync.Pool // []byte, used for pendingBuf
 
+	// Cached timers to avoid per-call allocation in ReadFrom/WriteTo hot paths.
+	readTimer  *time.Timer
+	writeTimer *time.Timer
+
+	// Cached LocalAddr result (immutable after construction).
+	localAddr net.Addr
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -50,6 +57,7 @@ func New(ctx context.Context, cfg *conf.Network) (*PacketConn, error) {
 
 	recvHandle, err := NewRecvHandle(cfg)
 	if err != nil {
+		sendHandle.Close()
 		return nil, fmt.Errorf("failed to create receive handle on %s: %v", cfg.Interface.Name, err)
 	}
 
@@ -65,6 +73,9 @@ func New(ctx context.Context, cfg *conf.Network) (*PacketConn, error) {
 		},
 	}
 
+	// Pre-compute LocalAddr once (config is immutable after init).
+	conn.localAddr = conn.buildLocalAddr()
+
 	return conn, nil
 }
 
@@ -76,12 +87,24 @@ func (c *PacketConn) setGuard(st *guardState) {
 }
 
 func (c *PacketConn) ReadFrom(data []byte) (n int, addr net.Addr, err error) {
-	var timer *time.Timer
 	var deadline <-chan time.Time
 	if d, ok := c.readDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer = time.NewTimer(time.Until(d))
-		defer timer.Stop()
-		deadline = timer.C
+		dur := time.Until(d)
+		if dur <= 0 {
+			return 0, nil, os.ErrDeadlineExceeded
+		}
+		if c.readTimer == nil {
+			c.readTimer = time.NewTimer(dur)
+		} else {
+			if !c.readTimer.Stop() {
+				select {
+				case <-c.readTimer.C:
+				default:
+				}
+			}
+			c.readTimer.Reset(dur)
+		}
+		deadline = c.readTimer.C
 	}
 
 	select {
@@ -298,12 +321,24 @@ func (c *PacketConn) enqueueCoalesced(payload []byte, addr net.Addr, g *guardSta
 }
 
 func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
-	var timer *time.Timer
 	var deadline <-chan time.Time
 	if d, ok := c.writeDeadline.Load().(time.Time); ok && !d.IsZero() {
-		timer = time.NewTimer(time.Until(d))
-		defer timer.Stop()
-		deadline = timer.C
+		dur := time.Until(d)
+		if dur <= 0 {
+			return 0, os.ErrDeadlineExceeded
+		}
+		if c.writeTimer == nil {
+			c.writeTimer = time.NewTimer(dur)
+		} else {
+			if !c.writeTimer.Stop() {
+				select {
+				case <-c.writeTimer.C:
+				default:
+				}
+			}
+			c.writeTimer.Reset(dur)
+		}
+		deadline = c.writeTimer.C
 	}
 
 	select {
@@ -375,9 +410,15 @@ func (c *PacketConn) Close() error {
 }
 
 func (c *PacketConn) LocalAddr() net.Addr {
-	// This is a best-effort informational address. We don't use a kernel UDP socket,
-	// but higher layers (KCP/session logs) expect a non-nil LocalAddr.
-	if c == nil || c.cfg == nil {
+	if c == nil {
+		return nil
+	}
+	return c.localAddr
+}
+
+// buildLocalAddr computes the local address once at construction time.
+func (c *PacketConn) buildLocalAddr() net.Addr {
+	if c.cfg == nil {
 		return nil
 	}
 	if c.cfg.IPv4.Addr != nil {

@@ -48,12 +48,23 @@ func BidiCopy(ctx context.Context, a net.Conn, b net.Conn, f1 func() error, f2 f
 		_ = b.SetDeadline(cancelAt)
 	}
 
+	shutdownTimer := time.NewTimer(30 * time.Second)
+	defer shutdownTimer.Stop()
+
 	for got < 2 {
+		if !shutdownTimer.Stop() {
+			select {
+			case <-shutdownTimer.C:
+			default:
+			}
+		}
+		shutdownTimer.Reset(30 * time.Second)
+
 		select {
 		case res := <-errCh:
 			errs[res.idx] = res.err
 			got++
-		case <-time.After(30 * time.Second):
+		case <-shutdownTimer.C:
 			if errs[0] == nil {
 				errs[0] = fmt.Errorf("bidi copy timeout waiting for goroutine shutdown")
 			}

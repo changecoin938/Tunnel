@@ -1,4 +1,4 @@
-# paqet server default profile (fast3 + gRPC-friendly)
+# paqet server default profile (fast2 + memory-safe baseline)
 # Replace IP/router_mac/key for your environment.
 role: "server"
 
@@ -19,7 +19,7 @@ network:
     addr: "10.0.0.100:9999"
     router_mac: "aa:bb:cc:dd:ee:ff"
   pcap:
-    sockbuf: 67108864
+    sockbuf: 16777216
     snaplen: 65535
     promisc: false
     immediate: false
@@ -27,21 +27,21 @@ network:
 
 transport:
   protocol: "kcp"
-  conn: 4
+  conn: 2
   kcp:
-    mode: "fast3"
+    mode: "fast2"
     mtu: 1350
-    rcvwnd: 16384
-    sndwnd: 16384
+    rcvwnd: 1024
+    sndwnd: 1024
     block: "aes-128-gcm"
     key: "your-secret-key-here"
     guard: true
     guard_magic: "PQT1"
     guard_window: 30
     guard_skew: 1
-    max_sessions: 2048
-    max_streams_total: 65536
-    max_streams_per_session: 4096
+    max_sessions: 512
+    max_streams_total: 4096
+    max_streams_per_session: 256
     header_timeout: 10
-    smuxbuf: 8388608
-    streambuf: 262144
+    smuxbuf: 2097152
+    streambuf: 131072

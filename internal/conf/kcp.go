@@ -54,17 +54,17 @@ type KCP struct {
 
 func (k *KCP) setDefaults(role string, _ int) {
 	if k.Mode == "" {
-		k.Mode = "fast3"
+		k.Mode = "fast2"
 	}
 	if k.MTU == 0 {
 		k.MTU = 1350
 	}
 
 	if k.Rcvwnd == 0 {
-		k.Rcvwnd = 16384
+		k.Rcvwnd = 1024
 	}
 	if k.Sndwnd == 0 {
-		k.Sndwnd = 16384
+		k.Sndwnd = 1024
 	}
 
 	// if k.Dshard == 0 {
@@ -100,24 +100,24 @@ func (k *KCP) setDefaults(role string, _ int) {
 	// Match UI/examples defaults for server-side limits.
 	if role == "server" {
 		if k.MaxSessions == 0 {
-			k.MaxSessions = 2048
+			k.MaxSessions = 512
 		}
 	}
 
 	if k.Smuxbuf == 0 {
-		k.Smuxbuf = 8 * 1024 * 1024
+		k.Smuxbuf = 2 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		k.Streambuf = 256 * 1024
+		k.Streambuf = 128 * 1024
 	}
 
 	// Match UI/examples defaults for server-side limits.
 	if role == "server" {
 		if k.MaxStreamsTotal == 0 {
-			k.MaxStreamsTotal = 65536
+			k.MaxStreamsTotal = 4096
 		}
 		if k.MaxStreamsPerSession == 0 {
-			k.MaxStreamsPerSession = 4096
+			k.MaxStreamsPerSession = 256
 		}
 		if k.MaxStreamsPerSession > k.MaxStreamsTotal && k.MaxStreamsTotal > 0 {
 			k.MaxStreamsPerSession = k.MaxStreamsTotal

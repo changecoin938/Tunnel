@@ -8,7 +8,7 @@ import (
 )
 
 func WErr(err error) error {
-	if minLevel == 0 {
+	if Level(minLevel.Load()) == Debug {
 		return err
 	}
 	if err == nil {

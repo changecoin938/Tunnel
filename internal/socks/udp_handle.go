@@ -13,9 +13,6 @@ import (
 )
 
 func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.Datagram) error {
-	bufp := buffer.UPool.Get().(*[]byte)
-	defer buffer.UPool.Put(bufp)
-	buf := *bufp
 	strm, new, k, err := h.client.UDP(addr.String(), d.Address())
 	if err != nil {
 		flog.Errorf("SOCKS5 failed to establish UDP stream for %s -> %s: %v", addr, d.Address(), err)
@@ -32,10 +29,27 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 	diag.AddUDPUp(int64(len(d.Data)))
 
 	if new {
+		// Copy mutable request fields before starting a goroutine. Some SOCKS5
+		// implementations reuse Datagram/UDPAddr storage between packets.
+		atyp := d.Atyp
+		dstAddr := append([]byte(nil), d.DstAddr...)
+		dstPort := append([]byte(nil), d.DstPort...)
+		peer := &net.UDPAddr{
+			IP:   append(net.IP(nil), addr.IP...),
+			Port: addr.Port,
+			Zone: addr.Zone,
+		}
+		clientAddr := peer.String()
+		targetAddr := d.Address()
+
 		flog.Infof("SOCKS5 accepted UDP connection %s -> %s", addr, d.Address())
 		go func() {
+			bufp := buffer.UPool.Get().(*[]byte)
+			defer buffer.UPool.Put(bufp)
+			buf := *bufp
+
 			defer func() {
-				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), addr, d.Address())
+				flog.Debugf("SOCKS5 UDP stream %d closed for %s -> %s", strm.SID(), clientAddr, targetAddr)
 				h.client.CloseUDP(k)
 			}()
 			for {
@@ -47,13 +61,13 @@ func (h *Handler) UDPHandle(server *socks5.Server, addr *net.UDPAddr, d *socks5.
 					n, err := strm.Read(buf)
 					strm.SetDeadline(time.Time{})
 					if err != nil {
-						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), addr, d.Address(), err)
+						flog.Debugf("SOCKS5 UDP stream %d read error for %s -> %s: %v", strm.SID(), clientAddr, targetAddr, err)
 						return
 					}
-					dd := socks5.NewDatagram(d.Atyp, d.DstAddr, d.DstPort, buf[:n])
-					_, err = server.UDPConn.WriteToUDP(dd.Bytes(), addr)
+					dd := socks5.NewDatagram(atyp, dstAddr, dstPort, buf[:n])
+					_, err = server.UDPConn.WriteToUDP(dd.Bytes(), peer)
 					if err != nil {
-						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", len(dd.Bytes()), addr, err)
+						flog.Errorf("SOCKS5 failed to write UDP response %d bytes to %s: %v", len(dd.Bytes()), clientAddr, err)
 						return
 					}
 					diag.AddUDPDown(int64(n))

@@ -1,6 +1,7 @@
 package kcp
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"paqet/internal/protocol"
@@ -54,24 +55,30 @@ func (c *Conn) Ping(wait bool) error {
 			return fmt.Errorf("connection test failed: %v", err)
 		}
 		if p.Type != protocol.PPONG {
-			return fmt.Errorf("connection test failed: %v", err)
+			return fmt.Errorf("connection test failed: unexpected response type %d", p.Type)
 		}
 	}
 	return nil
 }
 
 func (c *Conn) Close() error {
-	var err error
+	var errs []error
 	if c.UDPSession != nil {
-		c.UDPSession.Close()
+		if err := c.UDPSession.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if c.Session != nil {
-		c.Session.Close()
+		if err := c.Session.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if c.PacketConn != nil && c.OwnPacketConn {
-		c.PacketConn.Close()
+		if err := c.PacketConn.Close(); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	return err
+	return errors.Join(errs...)
 }
 
 func (c *Conn) LocalAddr() net.Addr                { return c.Session.LocalAddr() }

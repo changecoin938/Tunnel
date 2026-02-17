@@ -15,11 +15,8 @@ type PCAP struct {
 
 func (p *PCAP) setDefaults(role string) {
 	if p.Sockbuf == 0 {
-		if role == "server" {
-			p.Sockbuf = 64 * 1024 * 1024
-		} else {
-			p.Sockbuf = 16 * 1024 * 1024
-		}
+		_ = role
+		p.Sockbuf = 16 * 1024 * 1024
 	}
 	if p.Snaplen == 0 {
 		// Bounds per-packet capture size. Keep this large enough to safely capture

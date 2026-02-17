@@ -37,6 +37,7 @@ func (l *Listener) Accept() (tnet.Conn, error) {
 	aplConf(conn, l.cfg)
 	sess, err := smux.Server(conn, smuxConf(l.cfg))
 	if err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	return &Conn{PacketConn: l.packetConn, OwnPacketConn: false, UDPSession: conn, Session: sess}, nil

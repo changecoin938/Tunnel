@@ -63,8 +63,8 @@ yaml_quote() {
   printf "'%s'" "${s}"
 }
 
-# Tunnel defaults (high-throughput). These are embedded in generated configs.
-KCP_MODE="fast3"
+# Tunnel defaults (balanced profile for 4GB/4core servers).
+KCP_MODE="fast2"
 KCP_MTU="1350"
 PCAP_SNAPLEN="65535"
 PCAP_PROMISC="false"
@@ -81,8 +81,8 @@ DEBUG_PPROF_DEFAULT="127.0.0.1:6060"
 CLIENT_RAW_PORT_DEFAULT="20000"
 
 pick_client_conn() {
-  # Default profile: keep CPU predictable on 4-core servers.
-  echo 4
+  # Default profile tuned for memory stability on small servers.
+  echo 2
 }
 
 pick_client_raw_port() {
@@ -146,15 +146,15 @@ detect_mem_total_mb() {
 
 pick_kcp_window() {
   # Default profile window.
-  echo 16384
+  echo 1024
 }
 
 pick_smuxbuf() {
-  echo $(( 8 * 1024 * 1024 ))
+  echo $(( 2 * 1024 * 1024 ))
 }
 
 pick_streambuf() {
-  echo $(( 256 * 1024 ))
+  echo $(( 128 * 1024 ))
 }
 
 adjust_conn_to_free_server_port_range() {
@@ -1152,7 +1152,7 @@ diagnostics_loop() {
       "9" "Set snaplen=65535 + restart" \
       "10" "Live monitor (1s, Ctrl+C)" \
       "11" "Set DSCP (0 throughput / 46 low-latency)" \
-      "12" "Retune KCP (fast3 + window/buffer پیشنهادی)" \
+      "12" "Retune KCP (fast2 + window/buffer پیشنهادی)" \
       "0" "Back")" || return 0
 
     case "${choice}" in
@@ -1269,9 +1269,9 @@ gen_server_config() {
   local key_q
   key_q="$(yaml_quote "${key}")"
   if ! [[ "${conn}" =~ ^[0-9]+$ ]] || (( conn < 1 )); then conn=1; fi
-  if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
-  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((256*1024)); fi
+  if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=1024; fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((2*1024*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((128*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "server"
 
@@ -1292,7 +1292,7 @@ network:
     addr: "${ip}:${port}"
     router_mac: "${router_mac}"
   pcap:
-    sockbuf: 67108864
+    sockbuf: 16777216
     snaplen: ${PCAP_SNAPLEN}
     promisc: ${PCAP_PROMISC}
     immediate: ${PCAP_IMMEDIATE}
@@ -1312,9 +1312,9 @@ transport:
     guard_magic: "PQT1"
     guard_window: 30
     guard_skew: 1
-    max_sessions: 2048
-    max_streams_total: 65536
-    max_streams_per_session: 4096
+    max_sessions: 512
+    max_streams_total: 4096
+    max_streams_per_session: 256
     header_timeout: 10
     smuxbuf: ${smuxbuf}
     streambuf: ${streambuf}
@@ -1332,9 +1332,9 @@ gen_client_config_no_socks() {
   if (( conn > 256 )); then
     conn=256
   fi
-  if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=8192; fi
-  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((4*1024*1024)); fi
-  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((256*1024)); fi
+  if ! [[ "${wnd}" =~ ^[0-9]+$ ]] || (( wnd < 1 )); then wnd=1024; fi
+  if ! [[ "${smuxbuf}" =~ ^[0-9]+$ ]] || (( smuxbuf < 1024 )); then smuxbuf=$((2*1024*1024)); fi
+  if ! [[ "${streambuf}" =~ ^[0-9]+$ ]] || (( streambuf < 1024 )); then streambuf=$((128*1024)); fi
   cat >"${CONFIG_FILE}" <<EOF
 role: "client"
 
