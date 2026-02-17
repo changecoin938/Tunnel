@@ -508,6 +508,7 @@ ExecStart=${BIN} run -c ${CONFIG_FILE}
 ExecStopPost=${IPTABLES_SYSTEMD_SH} remove ${CONFIG_FILE}
 Restart=on-failure
 RestartSec=1
+TimeoutStopSec=15
 LimitNOFILE=1048576
 
 # Hardening (keep compatible with raw sockets)

@@ -6,12 +6,17 @@ import (
 	"paqet/internal/diag"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/iterator"
+	"sync"
+	"time"
 )
 
 type Client struct {
 	cfg     *conf.Conf
 	iter    *iterator.Iterator[*timedConn]
 	udpPool *udpPool
+
+	shutdownDone chan struct{}
+	shutdownOnce sync.Once
 }
 
 func New(cfg *conf.Conf) (*Client, error) {
@@ -23,6 +28,7 @@ func New(cfg *conf.Conf) (*Client, error) {
 			maxEntries:  udpPoolMaxEntriesDefault,
 			idleTimeout: udpPoolIdleTimeoutDefault,
 		},
+		shutdownDone: make(chan struct{}),
 	}
 	return c, nil
 }
@@ -66,6 +72,7 @@ func (c *Client) Start(ctx context.Context) error {
 			tc.close()
 		}
 		flog.Infof("client shutdown complete")
+		c.shutdownOnce.Do(func() { close(c.shutdownDone) })
 	}()
 
 	ipv4Addr := "<nil>"
@@ -78,4 +85,20 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 	flog.Infof("Client started: IPv4:%s IPv6:%s -> %s (%d connections)", ipv4Addr, ipv6Addr, c.cfg.Server.Addr, len(c.iter.Items))
 	return nil
+}
+
+func (c *Client) WaitShutdown(timeout time.Duration) bool {
+	if c == nil || c.shutdownDone == nil {
+		return true
+	}
+	if timeout <= 0 {
+		<-c.shutdownDone
+		return true
+	}
+	select {
+	case <-c.shutdownDone:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }

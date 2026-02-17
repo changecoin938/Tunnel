@@ -56,6 +56,7 @@ func (s *Server) Start() error {
 	defer cancel()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
 	go func() {
 		<-sig
 		flog.Infof("Shutdown signal received, initiating graceful shutdown...")
@@ -109,8 +110,18 @@ func (s *Server) Start() error {
 		flog.Infof("Server started - listening for packets on :%d", basePort)
 	}
 
-	s.wg.Wait()
-	flog.Infof("Server shutdown completed")
+	// Do not wait forever: pcap-backed reads can remain blocked on some platforms.
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		flog.Infof("Server shutdown completed")
+	case <-time.After(10 * time.Second):
+		flog.Warnf("Server shutdown timed out after 10s, forcing exit")
+	}
 	return nil
 }
 

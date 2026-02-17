@@ -10,6 +10,7 @@ import (
 	"paqet/internal/forward"
 	"paqet/internal/socks"
 	"syscall"
+	"time"
 )
 
 func startClient(cfg *conf.Conf) {
@@ -52,4 +53,7 @@ func startClient(cfg *conf.Conf) {
 	}
 
 	<-ctx.Done()
+	if !client.WaitShutdown(2 * time.Second) {
+		flog.Warnf("Client shutdown cleanup timed out after 2s")
+	}
 }
