@@ -372,8 +372,28 @@ role: "client"
 log:
   level: "${LOG_LEVEL}"
 
-socks5:
-  - listen: "127.0.0.1:1080"
+forward:
+  - listen: "0.0.0.0:443"
+    target: "127.0.0.1:2443"
+    protocol: "tcp"
+  - listen: "0.0.0.0:8080"
+    target: "127.0.0.1:2444"
+    protocol: "tcp"
+  - listen: "0.0.0.0:8880"
+    target: "127.0.0.1:2445"
+    protocol: "tcp"
+  - listen: "0.0.0.0:2053"
+    target: "127.0.0.1:2446"
+    protocol: "tcp"
+  - listen: "0.0.0.0:2083"
+    target: "127.0.0.1:2447"
+    protocol: "tcp"
+  - listen: "0.0.0.0:2087"
+    target: "127.0.0.1:2448"
+    protocol: "tcp"
+  - listen: "0.0.0.0:2096"
+    target: "127.0.0.1:2449"
+    protocol: "tcp"
 
 network:
   interface: "${IFACE}"
@@ -495,6 +515,17 @@ print_summary() {
         echo "  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s client ${LOCAL_IP} ${KEY}"
         echo
         echo -e "${YELLOW}Key: ${KEY}${NC}"
+        echo
+        echo -e "${CYAN}Port mapping (Client --> Server):${NC}"
+        echo "  :443   -->  127.0.0.1:2443"
+        echo "  :8080  -->  127.0.0.1:2444"
+        echo "  :8880  -->  127.0.0.1:2445"
+        echo "  :2053  -->  127.0.0.1:2446"
+        echo "  :2083  -->  127.0.0.1:2447"
+        echo "  :2087  -->  127.0.0.1:2448"
+        echo "  :2096  -->  127.0.0.1:2449"
+        echo
+        echo -e "${YELLOW}Configure Xray to listen on 127.0.0.1:2443-2449${NC}"
     fi
 
     echo -e "${CYAN}Useful commands:${NC}"

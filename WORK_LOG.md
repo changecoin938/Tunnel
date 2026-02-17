@@ -49,3 +49,8 @@ This file is updated after each push/release.
 - Applied a minimal installer hotfix in `install.sh` based on live server feedback.
 - In generated `iptables.sh`, removed `set -euo pipefail` to avoid `$1` nounset crashes in edge invocations.
 - Reordered helper variable parsing so `action` is resolved before `PORT` assignment.
+
+### Release v1.0.25
+- Client config generation in `install.sh` switched from SOCKS5 to 7-port TCP forward mapping (443/8080/8880/2053/2083/2087/2096).
+- Server summary output now prints full client→server port mapping table and Xray local listen reminder (`127.0.0.1:2443-2449`).
+- Added new Persian documentation file `README.fa.md` with install guide, port mapping, architecture overview, and common commands.
