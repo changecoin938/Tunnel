@@ -34,19 +34,12 @@ func New(cfg *conf.Conf) (*Client, error) {
 }
 
 func (c *Client) Start(ctx context.Context) error {
-	connected := 0
 	items := make([]*timedConn, 0, c.cfg.Transport.Conn)
 	for i := range c.cfg.Transport.Conn {
 		tc, err := newTimedConn(ctx, c.cfg, i)
 		if tc == nil {
 			// Fatal config error (e.g., port range too large).
 			return err
-		}
-		if err != nil {
-			flog.Errorf("failed to establish connection %d (will retry in background): %v", i+1, err)
-		} else {
-			connected++
-			flog.Debugf("client connection %d established successfully", i+1)
 		}
 		items = append(items, tc)
 	}
@@ -55,9 +48,7 @@ func (c *Client) Start(ctx context.Context) error {
 	for _, tc := range c.iter.Items {
 		go tc.maintain()
 	}
-	if connected == 0 {
-		flog.Warnf("client started with 0/%d tunnel connections established (will keep retrying)", len(c.iter.Items))
-	}
+	flog.Infof("client initializing %d tunnel connections in background", len(c.iter.Items))
 	// The ticker is only for diagnostics (ping RTT). Avoid extra streams/CPU in production.
 	if diag.Enabled() {
 		go c.ticker(ctx)

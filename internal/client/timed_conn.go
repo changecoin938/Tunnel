@@ -32,11 +32,6 @@ func newTimedConn(ctx context.Context, cfg *conf.Conf, connIndex int) (*timedCon
 	if err := tc.applyConnIndex(connIndex); err != nil {
 		return nil, err
 	}
-	conn, err := tc.createConn()
-	if err != nil {
-		return tc, err
-	}
-	tc.conn = conn
 	return tc, nil
 }
 

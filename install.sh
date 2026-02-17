@@ -116,6 +116,7 @@ curl -fsSL "${url}" -o "${tmp}/paqet.tgz"
 
 tar -xzf "${tmp}/paqet.tgz" -C "${tmp}"
 
+install -d /usr/local/bin
 install -m 0755 "${tmp}/paqet_linux_${goarch}" /usr/local/bin/paqet
 
 install -d /usr/local/lib/paqet

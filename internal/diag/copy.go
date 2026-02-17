@@ -90,7 +90,7 @@ func readFromWithRetry(dst interface {
 		if err == nil || errors.Is(err, io.EOF) {
 			return written, nil
 		}
-		if !IsNoBufferOrNoMem(err) {
+		if !isTransientBackpressure(err) {
 			return written, err
 		}
 
@@ -98,12 +98,16 @@ func readFromWithRetry(dst interface {
 		// goroutines stuck forever under sustained memory pressure.
 		// Phase 1 (burst): fast exponential backoff up to burstBudget.
 		// Phase 2 (sustained): steady 100ms waits.
-		AddEnobufsRetry()
+		if IsNoBufferOrNoMem(err) {
+			AddEnobufsRetry()
+		}
 		if totalSlept >= maxTotalWait {
 			return written, err
 		}
 		if totalSlept >= burstBudget {
-			AddEnobufsSustained()
+			if IsNoBufferOrNoMem(err) {
+				AddEnobufsSustained()
+			}
 			time.Sleep(sustainedWait)
 			totalSlept += sustainedWait
 			continue
@@ -129,6 +133,19 @@ func IsNoBufferOrNoMem(err error) bool {
 		errors.Is(err, syscall.ENOMEM) ||
 		strings.Contains(err.Error(), "No buffer space available") ||
 		strings.Contains(err.Error(), "Cannot allocate memory")
+}
+
+func isTransientBackpressure(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Under heavy load, TCPConn's splice/sendfile paths can surface EAGAIN/EWOULDBLOCK.
+	// Treat it like temporary kernel backpressure: retry with a short backoff instead
+	// of tearing down the stream (speedtest bursts commonly hit this).
+	return IsNoBufferOrNoMem(err) ||
+		errors.Is(err, syscall.EAGAIN) ||
+		errors.Is(err, syscall.EWOULDBLOCK) ||
+		strings.Contains(err.Error(), "Resource temporarily unavailable")
 }
 
 func writeFullWithRetry(dst io.Writer, p []byte) (int, error) {
@@ -158,13 +175,17 @@ func writeFullWithRetry(dst io.Writer, p []byte) (int, error) {
 		}
 
 		// ENOBUFS/ENOMEM: never give up — keep the stream alive.
-		if IsNoBufferOrNoMem(err) {
-			AddEnobufsRetry()
+		if isTransientBackpressure(err) {
+			if IsNoBufferOrNoMem(err) {
+				AddEnobufsRetry()
+			}
 			if totalSlept >= maxTotalWait {
 				return written, err
 			}
 			if totalSlept >= burstBudget {
-				AddEnobufsSustained()
+				if IsNoBufferOrNoMem(err) {
+					AddEnobufsSustained()
+				}
 				time.Sleep(sustainedWait)
 				totalSlept += sustainedWait
 				continue

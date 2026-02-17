@@ -42,7 +42,7 @@ func (p *PCAP) setDefaults(role string) {
 	}
 	// Timeout controls buffering when immediate=false.
 	if p.TimeoutMs == 0 {
-		p.TimeoutMs = 2
+		p.TimeoutMs = 5
 	}
 }
 

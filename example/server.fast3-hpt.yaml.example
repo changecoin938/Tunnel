@@ -19,20 +19,20 @@ network:
     addr: "10.0.0.100:9999"
     router_mac: "aa:bb:cc:dd:ee:ff"
   pcap:
-    sockbuf: 33554432
+    sockbuf: 67108864
     snaplen: 65535
     promisc: false
-    immediate: true
-    timeout_ms: 0
+    immediate: false
+    timeout_ms: 5
 
 transport:
   protocol: "kcp"
-  conn: 10
+  conn: 4
   kcp:
     mode: "fast3"
     mtu: 1350
-    rcvwnd: 8192
-    sndwnd: 8192
+    rcvwnd: 16384
+    sndwnd: 16384
     block: "aes-128-gcm"
     key: "your-secret-key-here"
     guard: true
@@ -47,5 +47,5 @@ transport:
     max_streams_per_session: 4096
 
     # Multiplexing buffers
-    smuxbuf: 4194304
+    smuxbuf: 8388608
     streambuf: 262144

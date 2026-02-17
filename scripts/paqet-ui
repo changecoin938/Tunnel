@@ -68,8 +68,8 @@ KCP_MODE="fast3"
 KCP_MTU="1350"
 PCAP_SNAPLEN="65535"
 PCAP_PROMISC="false"
-PCAP_IMMEDIATE="true"
-PCAP_TIMEOUT_MS="0"
+PCAP_IMMEDIATE="false"
+PCAP_TIMEOUT_MS="5"
 
 DSCP_DEFAULT="0"
 
@@ -81,8 +81,8 @@ DEBUG_PPROF_DEFAULT="127.0.0.1:6060"
 CLIENT_RAW_PORT_DEFAULT="20000"
 
 pick_client_conn() {
-  # Default profile: keep 10 parallel KCP sessions for gRPC-heavy setups.
-  echo 10
+  # Default profile: keep CPU predictable on 4-core servers.
+  echo 4
 }
 
 pick_client_raw_port() {
@@ -146,11 +146,11 @@ detect_mem_total_mb() {
 
 pick_kcp_window() {
   # Default profile window.
-  echo 8192
+  echo 16384
 }
 
 pick_smuxbuf() {
-  echo $(( 4 * 1024 * 1024 ))
+  echo $(( 8 * 1024 * 1024 ))
 }
 
 pick_streambuf() {
@@ -412,12 +412,12 @@ ensure_gateway_mac() {
 write_sysctl_defaults() {
   cat >"${SYSCTL_CONF}" <<'EOF'
 # paqet baseline tuning (adjust per host/RAM/NIC)
-net.core.rmem_max = 33554432
-net.core.wmem_max = 33554432
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
 net.core.rmem_default = 262144
 net.core.wmem_default = 262144
-net.ipv4.tcp_rmem = 4096 131072 33554432
-net.ipv4.tcp_wmem = 4096 131072 33554432
+net.ipv4.tcp_rmem = 4096 131072 67108864
+net.ipv4.tcp_wmem = 4096 131072 67108864
 net.core.netdev_max_backlog = 250000
 EOF
   sysctl --system >/dev/null 2>&1 || true
@@ -1292,7 +1292,7 @@ network:
     addr: "${ip}:${port}"
     router_mac: "${router_mac}"
   pcap:
-    sockbuf: 33554432
+    sockbuf: 67108864
     snaplen: ${PCAP_SNAPLEN}
     promisc: ${PCAP_PROMISC}
     immediate: ${PCAP_IMMEDIATE}
