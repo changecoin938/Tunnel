@@ -268,13 +268,17 @@ func (tc *timedConn) reconnectLoop() (tnet.Conn, error) {
 			return conn, nil
 		}
 		lastErr = err
-		if time.Now().After(nextLog) {
+		now := time.Now()
+		if now.After(nextLog) {
 			flog.Warnf("tunnel connection %d reconnect failed (retrying): %v", tc.connIndex+1, lastErr)
-			nextLog = time.Now().Add(30 * time.Second)
+			nextLog = now.Add(60 * time.Second)
 		}
 		time.Sleep(backoff)
-		if backoff < 5*time.Second {
+		if backoff < 30*time.Second {
 			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
 		}
 	}
 }

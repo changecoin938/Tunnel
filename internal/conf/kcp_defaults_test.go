@@ -20,14 +20,14 @@ func TestKCPSetDefaults_AlignWithUIClient(t *testing.T) {
 	if k.Mode != "fast3" {
 		t.Fatalf("expected mode fast3, got %q", k.Mode)
 	}
-	if k.Rcvwnd != 8192 || k.Sndwnd != 8192 {
-		t.Fatalf("expected window defaults 8192/8192, got %d/%d", k.Rcvwnd, k.Sndwnd)
+	if k.Rcvwnd != 16384 || k.Sndwnd != 16384 {
+		t.Fatalf("expected window defaults 16384/16384, got %d/%d", k.Rcvwnd, k.Sndwnd)
 	}
-	if k.Smuxbuf != 4*1024*1024 {
-		t.Fatalf("expected smuxbuf 4MiB, got %d", k.Smuxbuf)
+	if k.Smuxbuf != 16*1024*1024 {
+		t.Fatalf("expected smuxbuf 16MiB, got %d", k.Smuxbuf)
 	}
-	if k.Streambuf != 256*1024 {
-		t.Fatalf("expected streambuf 256KiB, got %d", k.Streambuf)
+	if k.Streambuf != 512*1024 {
+		t.Fatalf("expected streambuf 512KiB, got %d", k.Streambuf)
 	}
 }
 

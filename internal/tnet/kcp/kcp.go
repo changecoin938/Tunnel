@@ -45,8 +45,8 @@ func smuxConf(cfg *conf.KCP) *smux.Config {
 	sconf.Version = 2
 	// Be conservative: cross-border links can have jitter/bursts, and aggressive
 	// keepalives can cause unnecessary session resets under mild loss.
-	sconf.KeepAliveInterval = 10 * time.Second
-	sconf.KeepAliveTimeout = 30 * time.Second
+	sconf.KeepAliveInterval = 5 * time.Second
+	sconf.KeepAliveTimeout = 15 * time.Second
 	sconf.MaxFrameSize = 65535
 	sconf.MaxReceiveBuffer = cfg.Smuxbuf
 	sconf.MaxStreamBuffer = cfg.Streambuf

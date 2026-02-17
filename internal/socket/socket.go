@@ -10,6 +10,7 @@ import (
 	"os"
 	"paqet/internal/conf"
 	"paqet/internal/diag"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -353,6 +354,7 @@ func (c *PacketConn) WriteTo(data []byte, addr net.Addr) (n int, err error) {
 		strings.Contains(err.Error(), "No buffer space available") ||
 		strings.Contains(err.Error(), "Cannot allocate memory") {
 		diag.AddRawUpDrop(wireLen)
+		runtime.Gosched()
 		return len(data), nil
 	}
 	return 0, err

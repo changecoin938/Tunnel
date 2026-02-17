@@ -16,9 +16,9 @@ type PCAP struct {
 func (p *PCAP) setDefaults(role string) {
 	if p.Sockbuf == 0 {
 		if role == "server" {
-			p.Sockbuf = 16 * 1024 * 1024
+			p.Sockbuf = 64 * 1024 * 1024
 		} else {
-			p.Sockbuf = 4 * 1024 * 1024
+			p.Sockbuf = 16 * 1024 * 1024
 		}
 	}
 	if p.Snaplen == 0 {
@@ -35,12 +35,15 @@ func (p *PCAP) setDefaults(role string) {
 	//
 	// Promisc default is false, so only set it if you know you need it.
 
-	// Immediate mode trades CPU for lower latency. Keep current behavior by default.
+	// Prefer micro-batching by default to reduce userspace wakeups under load.
 	if p.Immediate == nil {
-		v := true
+		v := false
 		p.Immediate = &v
 	}
-	// Timeout controls buffering when immediate=false. 0 means BlockForever (pcap default).
+	// Timeout controls buffering when immediate=false.
+	if p.TimeoutMs == 0 {
+		p.TimeoutMs = 2
+	}
 }
 
 func (p *PCAP) validate() []error {

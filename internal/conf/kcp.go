@@ -61,10 +61,10 @@ func (k *KCP) setDefaults(role string, _ int) {
 	}
 
 	if k.Rcvwnd == 0 {
-		k.Rcvwnd = 8192
+		k.Rcvwnd = 16384
 	}
 	if k.Sndwnd == 0 {
-		k.Sndwnd = 8192
+		k.Sndwnd = 16384
 	}
 
 	// if k.Dshard == 0 {
@@ -105,10 +105,10 @@ func (k *KCP) setDefaults(role string, _ int) {
 	}
 
 	if k.Smuxbuf == 0 {
-		k.Smuxbuf = 4 * 1024 * 1024
+		k.Smuxbuf = 16 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		k.Streambuf = 256 * 1024
+		k.Streambuf = 512 * 1024
 	}
 
 	// Match UI/examples defaults for server-side limits.

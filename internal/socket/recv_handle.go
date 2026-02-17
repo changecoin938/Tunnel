@@ -14,9 +14,7 @@ import (
 type RecvHandle struct {
 	handle *pcap.Handle
 
-	mu           sync.RWMutex
-	addrCache    map[addrKey]*net.UDPAddr
-	addrCacheOld map[addrKey]*net.UDPAddr
+	addrCache sync.Map // map[addrKey]*net.UDPAddr
 }
 
 func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
@@ -37,10 +35,7 @@ func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
 		return nil, fmt.Errorf("failed to set BPF filter: %w", err)
 	}
 
-	return &RecvHandle{
-		handle:    handle,
-		addrCache: make(map[addrKey]*net.UDPAddr, 1024),
-	}, nil
+	return &RecvHandle{handle: handle}, nil
 }
 
 func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
@@ -51,6 +46,7 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
 			// NextErrorTimeoutExpired when no packets arrive within the window.
 			// This is NOT fatal; keep waiting.
 			if err == pcap.NextErrorTimeoutExpired {
+				runtime.Gosched()
 				continue
 			}
 			return nil, nil, err
@@ -80,8 +76,6 @@ type addrKey struct {
 	v4   bool
 }
 
-const maxAddrCache = 65536
-
 func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 	var k addrKey
 	k.port = srcPort
@@ -92,18 +86,11 @@ func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 		copy(k.ip[:], srcIP)
 	}
 
-	h.mu.RLock()
-	if a := h.addrCache[k]; a != nil {
-		h.mu.RUnlock()
-		return a
-	}
-	if old := h.addrCacheOld; old != nil {
-		if a := old[k]; a != nil {
-			h.mu.RUnlock()
+	if v, ok := h.addrCache.Load(k); ok {
+		if a, ok := v.(*net.UDPAddr); ok && a != nil {
 			return a
 		}
 	}
-	h.mu.RUnlock()
 
 	// Create a stable copy (pcap buffers are reused).
 	var ipCopy net.IP
@@ -116,25 +103,11 @@ func (h *RecvHandle) getAddr(srcIP []byte, srcPort uint16) *net.UDPAddr {
 	}
 	addr := &net.UDPAddr{IP: ipCopy, Port: int(srcPort)}
 
-	h.mu.Lock()
-	// If we got flooded with unique spoofed sources, keep memory bounded.
-	if len(h.addrCache) >= maxAddrCache {
-		h.addrCacheOld = h.addrCache
-		h.addrCache = make(map[addrKey]*net.UDPAddr, 1024)
-	}
-	if a := h.addrCache[k]; a != nil {
-		h.mu.Unlock()
-		return a
-	}
-	if old := h.addrCacheOld; old != nil {
-		if a := old[k]; a != nil {
-			h.mu.Unlock()
+	if prev, loaded := h.addrCache.LoadOrStore(k, addr); loaded {
+		if a, ok := prev.(*net.UDPAddr); ok && a != nil {
 			return a
 		}
 	}
-	h.addrCache[k] = addr
-	h.mu.Unlock()
-
 	return addr
 }
 

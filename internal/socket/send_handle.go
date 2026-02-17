@@ -17,8 +17,13 @@ import (
 
 type TCPF struct {
 	tcpF       iterator.Iterator[conf.TCPF]
-	clientTCPF map[uint64]*iterator.Iterator[conf.TCPF]
-	mu         sync.RWMutex
+	clientTCPF sync.Map // map[uint64]*iterator.Iterator[conf.TCPF]
+	last       atomic.Value
+}
+
+type tcpfCacheEntry struct {
+	key uint64
+	it  *iterator.Iterator[conf.TCPF]
 }
 
 type SendHandle struct {
@@ -85,7 +90,7 @@ func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 		handle:  handle,
 		srcMAC:  cfg.Interface.HardwareAddr,
 		srcPort: uint16(cfg.Port),
-		tcpF:    TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}, clientTCPF: make(map[uint64]*iterator.Iterator[conf.TCPF])},
+		tcpF:    TCPF{tcpF: iterator.Iterator[conf.TCPF]{Items: cfg.TCP.LF}},
 		time:    uint32(time.Now().UnixNano() / int64(time.Millisecond)),
 		framePool: sync.Pool{
 			New: func() any {
@@ -348,11 +353,21 @@ func tcpChecksumIPv6(src16, dst16 []byte, tcpSeg []byte) uint16 {
 }
 
 func (h *SendHandle) getClientTCPF(dstIP net.IP, dstPort uint16) conf.TCPF {
-	h.tcpF.mu.RLock()
-	defer h.tcpF.mu.RUnlock()
-	if ff := h.tcpF.clientTCPF[hash.IPAddr(dstIP, dstPort)]; ff != nil {
-		if f, ok := ff.Next(); ok {
-			return f
+	key := hash.IPAddr(dstIP, dstPort)
+	if v := h.tcpF.last.Load(); v != nil {
+		if ent, ok := v.(tcpfCacheEntry); ok && ent.key == key && ent.it != nil {
+			if f, ok := ent.it.Next(); ok {
+				return f
+			}
+		}
+	}
+
+	if v, ok := h.tcpF.clientTCPF.Load(key); ok {
+		if ff, ok := v.(*iterator.Iterator[conf.TCPF]); ok && ff != nil {
+			h.tcpF.last.Store(tcpfCacheEntry{key: key, it: ff})
+			if f, ok := ff.Next(); ok {
+				return f
+			}
 		}
 	}
 	if f, ok := h.tcpF.tcpF.Next(); ok {
@@ -368,9 +383,10 @@ func (h *SendHandle) setClientTCPF(addr net.Addr, f []conf.TCPF) {
 		return
 	}
 	a := *ua
-	h.tcpF.mu.Lock()
-	h.tcpF.clientTCPF[hash.IPAddr(a.IP, uint16(a.Port))] = &iterator.Iterator[conf.TCPF]{Items: f}
-	h.tcpF.mu.Unlock()
+	key := hash.IPAddr(a.IP, uint16(a.Port))
+	it := &iterator.Iterator[conf.TCPF]{Items: f}
+	h.tcpF.clientTCPF.Store(key, it)
+	h.tcpF.last.Store(tcpfCacheEntry{key: key, it: it})
 }
 
 func (h *SendHandle) clearClientTCPF(addr net.Addr) {
@@ -379,9 +395,9 @@ func (h *SendHandle) clearClientTCPF(addr net.Addr) {
 		return
 	}
 	a := *ua
-	h.tcpF.mu.Lock()
-	delete(h.tcpF.clientTCPF, hash.IPAddr(a.IP, uint16(a.Port)))
-	h.tcpF.mu.Unlock()
+	key := hash.IPAddr(a.IP, uint16(a.Port))
+	h.tcpF.clientTCPF.Delete(key)
+	h.tcpF.last.Store(tcpfCacheEntry{})
 }
 
 func (h *SendHandle) Close() {
