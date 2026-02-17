@@ -35,20 +35,20 @@ die()   { error "$*"; exit 1; }
 
 # ─── Parse args ──────────────────────────────────────────────────────────────
 ROLE="${1:-}"
-URL_BASE="https://raw.githubusercontent.com/${REPO}/release/${VERSION}/scripts/paqet-install"
 
 if [[ "${ROLE}" == "server" ]]; then
   KEY="${2:-}"
-  [[ -n "${KEY}" ]] || { echo "Usage: curl -sL URL | bash -s -- server KEY"; die "Missing KEY"; }
+  [[ -n "${KEY}" ]] || die "Usage: ... | bash -s -- server KEY"
 
 elif [[ "${ROLE}" == "client" ]]; then
   SERVER_IP="${2:-}"; KEY="${3:-}"
-  [[ -n "${SERVER_IP}" && -n "${KEY}" ]] || { echo "Usage: curl -sL URL | bash -s -- client SERVER_IP KEY"; die "Missing SERVER_IP or KEY"; }
+  [[ -n "${SERVER_IP}" && -n "${KEY}" ]] || die "Usage: ... | bash -s -- client SERVER_IP KEY"
 
 else
+  echo ""
   printf "${CYAN}paqet ${VERSION} Installer${NC}\n\n"
-  echo "Server:  curl -sL ${URL_BASE} | bash -s -- server KEY"
-  echo "Client:  curl -sL ${URL_BASE} | bash -s -- client SERVER_IP KEY"
+  echo "  Server:  curl -sL URL | bash -s -- server KEY"
+  echo "  Client:  curl -sL URL | bash -s -- client SERVER_IP KEY"
   echo ""
   die "First argument must be 'server' or 'client'"
 fi
@@ -56,34 +56,87 @@ fi
 PORT="9999"
 CLIENT_PORT="20000"
 
-# ─── Auto-detect (silent, no prompts) ────────────────────────────────────────
-# Interface: the one used for default route
-IFACE="$(ip -o route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}')" || true
-[[ -n "${IFACE}" ]] || die "Cannot detect interface. Check: ip route"
+# ─── Auto-detect network ────────────────────────────────────────────────────
+detect_network() {
+  # Interface
+  IFACE="$(ip -o route get 8.8.8.8 2>/dev/null | sed -n 's/.*dev \([^ ]*\).*/\1/p')"
+  if [[ -z "${IFACE}" ]]; then
+    die "Cannot detect interface"
+  fi
 
-# IP: primary address on that interface
-IP="$(ip -4 addr show "${IFACE}" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')" || true
-[[ -n "${IP}" ]] || die "Cannot detect IP on ${IFACE}. Check: ip addr show ${IFACE}"
+  # IP — use the src from route get (most reliable)
+  IP="$(ip -o route get 8.8.8.8 2>/dev/null | sed -n 's/.*src \([^ ]*\).*/\1/p')"
+  if [[ -z "${IP}" ]]; then
+    # fallback to interface address
+    IP="$(ip -4 addr show "${IFACE}" 2>/dev/null | awk '/inet /{sub(/\/.*/, "", $2); print $2; exit}')"
+  fi
+  if [[ -z "${IP}" ]]; then
+    die "Cannot detect IP"
+  fi
 
-# Gateway MAC: find gateway IP, ping it to populate ARP, then read
-GW_IP="$(ip route show default 2>/dev/null | awk '/via/{print $3; exit}')" || true
-if [[ -n "${GW_IP}" ]]; then
-  # Populate ARP cache
-  ping -c1 -W2 "${GW_IP}" >/dev/null 2>&1 || true
+  # Gateway IP
+  local gw_ip
+  gw_ip="$(ip route show default 2>/dev/null | sed -n 's/.*via \([^ ]*\).*/\1/p' | head -1)"
+  if [[ -z "${gw_ip}" ]]; then
+    die "Cannot detect gateway"
+  fi
+
+  # Gateway MAC — ping first to ensure ARP entry exists
+  ping -c2 -W2 -q "${gw_ip}" >/dev/null 2>&1 || true
   sleep 1
-fi
-# Try multiple methods to get MAC
-MAC="$(ip neigh show "${GW_IP}" dev "${IFACE}" 2>/dev/null | awk '{print $5; exit}')" || true
-if [[ -z "${MAC}" ]]; then
-  MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | awk 'NF>=5{print $5; exit}')" || true
-fi
-if [[ -z "${MAC}" ]]; then
-  # Try arp command as fallback
-  MAC="$(arp -n -i "${IFACE}" 2>/dev/null | awk 'NR>1{print $3; exit}')" || true
-fi
-[[ -n "${MAC}" ]] || die "Cannot detect gateway MAC. Check: ip neigh show dev ${IFACE}"
 
-info "Detected: ${IFACE} / ${IP} / ${MAC}"
+  # Read MAC from ARP/neighbor table
+  MAC=""
+
+  # Method 1: ip neigh (specific gateway + interface)
+  if [[ -z "${MAC}" ]]; then
+    MAC="$(ip neigh show "${gw_ip}" dev "${IFACE}" 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
+  fi
+
+  # Method 2: ip neigh (specific gateway, any interface)
+  if [[ -z "${MAC}" ]]; then
+    MAC="$(ip neigh show "${gw_ip}" 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
+  fi
+
+  # Method 3: ip neigh (any entry on interface)
+  if [[ -z "${MAC}" ]]; then
+    MAC="$(ip neigh show dev "${IFACE}" 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
+  fi
+
+  # Method 4: arp command
+  if [[ -z "${MAC}" ]]; then
+    MAC="$(arp -n "${gw_ip}" 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
+  fi
+
+  # Method 5: cat /proc/net/arp
+  if [[ -z "${MAC}" ]]; then
+    MAC="$(grep "${gw_ip} " /proc/net/arp 2>/dev/null | grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' | head -1)" || true
+  fi
+
+  if [[ -z "${MAC}" ]]; then
+    error "Cannot detect gateway MAC address"
+    error "Gateway IP: ${gw_ip}"
+    error "Interface:  ${IFACE}"
+    echo ""
+    echo "Debug info:"
+    echo "--- ip neigh ---"
+    ip neigh 2>/dev/null || true
+    echo "--- arp -n ---"
+    arp -n 2>/dev/null || true
+    echo ""
+    die "Please report the above output"
+  fi
+}
+
+detect_network
+
+info "Interface : ${IFACE}"
+info "IP        : ${IP}"
+info "Gateway   : ${MAC}"
+info "Role      : ${ROLE}"
+if [[ "${ROLE}" == "client" ]]; then
+  info "Server    : ${SERVER_IP}:${PORT}"
+fi
 
 # ─── Download binary ─────────────────────────────────────────────────────────
 info "Downloading paqet ${VERSION} ..."
