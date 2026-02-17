@@ -141,6 +141,13 @@ install_go() {
 
 install_go
 
+# ─── Install libpcap (needed by gopacket) ────────────────────────────────────
+if ! dpkg -s libpcap-dev >/dev/null 2>&1; then
+  info "Installing libpcap-dev ..."
+  apt-get update -qq >/dev/null 2>&1
+  apt-get install -y -qq libpcap-dev >/dev/null 2>&1
+fi
+
 # ─── Build from source ──────────────────────────────────────────────────────
 info "Cloning and building paqet ..."
 
@@ -148,7 +155,7 @@ rm -rf "${BUILD_DIR}"
 git clone --depth 1 --branch "${BRANCH}" "${REPO_URL}" "${BUILD_DIR}" 2>/dev/null
 
 cd "${BUILD_DIR}"
-CGO_ENABLED=0 go build -o paqet ./cmd
+CGO_ENABLED=1 go build -o paqet ./cmd
 [[ -f paqet ]] || die "Build failed"
 
 PAQET_VERSION="$(./paqet version 2>/dev/null | head -1 | awk '{print $2}')" || true
