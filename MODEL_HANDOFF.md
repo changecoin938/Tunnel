@@ -45,7 +45,7 @@ SOCKS5/Forward → client.TCP/UDP() → KCP+smux stream → server.handleStrm() 
 
 ### Open Bugs
 
-- [ ] No currently open bugs from BUG-001..BUG-012 baseline list
+- [ ] No currently open bugs
 
 ### Fixed Bugs
 
@@ -61,6 +61,14 @@ SOCKS5/Forward → client.TCP/UDP() → KCP+smux stream → server.handleStrm() 
 - [x] BUG-010 fixed in `internal/diag/bidi.go` (`time.After` replaced with reusable `time.NewTimer`)
 - [x] BUG-011 fixed in `internal/forward/udp.go` (removed `CloseUDP(0)` on initial stream-creation error path)
 - [x] BUG-012 fixed in `internal/flog/flog.go` (logger has explicit stop/drain lifecycle, no close-channel panic path)
+- [x] BUG-013 fixed in `internal/tnet/kcp/dial.go` (KCP session leak on smux failure — `conn.Close()` added)
+- [x] BUG-014 fixed in `internal/client/timed_conn.go` (reconnect storm — backoff 50ms→500ms with ±25% jitter)
+- [x] BUG-015 fixed in `internal/client/timed_conn.go` (aggressive maintain ticker — adaptive 30s/2s timer)
+- [x] BUG-016 fixed in `internal/client/dial.go` + `client.go` (newStrm busy-loop → channel-based wait)
+- [x] BUG-017 fixed in `internal/diag/bidi.go` (BidiCopy phantom goroutines — force-close on timeout)
+- [x] BUG-018 fixed in `internal/server/server.go` (timer leak — `time.After` → `time.NewTimer` + `Stop`)
+- [x] BUG-019 fixed in `internal/client/timed_conn.go` (closeConnKeepPacket — canonical `Close()` path)
+- [x] BUG-020 fixed in `internal/client/client.go` (WaitShutdown timer leak — same pattern as BUG-018)
 
 ## 4. Optimization Tracker
 
@@ -132,3 +140,57 @@ go test -race ./...
 - OPT-005: Replaced double `fmt.Sprintf` in `flog/flog.go` with `time.AppendFormat` + `fmt.Appendf` — single allocation instead of three
 - OPT-006: Cached `LocalAddr()` result in `socket/socket.go` — computed once at construction, no per-call allocation
 - All changes verified: `go build ./...` ✓ `go vet ./...` ✓ `go test ./...` ✓
+
+### Session: 2026-02-17 (TCP leak & CPU drain fixes)
+
+Deep investigation of excessive TCP connection creation and high CPU usage reported in production.
+Three parallel research agents audited all 82 Go files. Root causes identified and fixed:
+
+#### BUG-013: KCP session leak on smux failure
+- **File**: `internal/tnet/kcp/dial.go`
+- **Problem**: When `smux.Client()` failed, the underlying KCP `conn` was never closed — leaked goroutines + file descriptors
+- **Fix**: Added `_ = conn.Close()` before returning error
+
+#### BUG-014: Reconnect storm (thundering-herd)
+- **File**: `internal/client/timed_conn.go`
+- **Problem**: `reconnectLoop` used 50ms backoff — 10 parallel connections × 20 retries/sec = 200 dial attempts/sec during outage, causing massive CPU + pcap handle churn
+- **Fix**: Initial backoff raised to 500ms with ±25% jitter (`375ms–625ms`). Prevents synchronized reconnect waves
+
+#### BUG-015: Aggressive maintain() ticker
+- **File**: `internal/client/timed_conn.go`
+- **Problem**: `maintain()` used a fixed 2-second `NewTicker` regardless of connection state — wasted CPU checking healthy connections every 2s
+- **Fix**: Adaptive `NewTimer`: 30s when connected (just health-check), 2s when broken (fast recovery). Timer properly stopped and recreated each iteration
+
+#### BUG-016: newStrm busy-loop CPU drain
+- **File**: `internal/client/dial.go`, `internal/client/client.go`
+- **Problem**: `newStrm()` polled every 50ms with `time.Sleep` when no tunnel was available. Also called `kickReconnect()` on every nil connection every iteration — thundering-herd on all N connections
+- **Fix**: Added `connReady` channel notification system to `Client`. `newStrm()` now blocks on `select { case <-c.getConnReady() }` instead of busy-polling. `kicked` flag ensures `kickReconnect()` is called only once per attempt
+
+#### BUG-017: BidiCopy phantom goroutines
+- **File**: `internal/diag/bidi.go`
+- **Problem**: On 30s shutdown timeout, `BidiCopy` returned errors but never force-closed the connections — `SetDeadline` alone may not unblock a stuck `io.Copy` if the peer is unresponsive
+- **Fix**: Added `a.Close()` and `b.Close()` in the `shutdownTimer.C` case before returning
+
+#### BUG-018: Timer leak in server shutdown
+- **File**: `internal/server/server.go`
+- **Problem**: `time.After(10 * time.Second)` creates an unreferenced timer that cannot be garbage collected until it fires — leaked memory on every shutdown path
+- **Fix**: Replaced with `time.NewTimer(10s)` + `defer shutdownTimer.Stop()`
+
+#### BUG-019: closeConnKeepPacket non-canonical close
+- **File**: `internal/client/timed_conn.go`
+- **Problem**: `closeConnKeepPacket` manually closed `UDPSession` and `Session` separately, bypassing the `kcp.Conn.Close()` path which handles internal cleanup (goroutine cancellation, buffer flush)
+- **Fix**: Set `kc.OwnPacketConn = false` then call canonical `kc.Close()` — properly tears down smux+KCP while preserving the shared `PacketConn` for reuse
+
+#### BUG-020: Timer leak in WaitShutdown
+- **File**: `internal/client/client.go`
+- **Problem**: `time.After(timeout)` in `WaitShutdown` leaked timer on early return
+- **Fix**: Replaced with `time.NewTimer(timeout)` + `defer timer.Stop()`
+
+#### Cleanup
+- Removed ~70 macOS AppleDouble (`._*`) metadata files from project tree
+- Synced `scripts/paqet-install` (production installer) from Documents/GitHub version
+
+#### Verification
+- `go vet ./...` ✓
+- `go build ./...` ✓
+- `go test ./...` ✓
