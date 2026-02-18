@@ -183,6 +183,7 @@ install_deps() {
 calc_conn() {
     local n
     n=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
+    n=$((n * 2))
     if [[ -z "$n" || "$n" -lt 2 ]]; then
         n=2
     fi
@@ -356,14 +357,15 @@ network:
 transport:
   protocol: "kcp"
   conn: ${CONN}
+  tcpbuf: 131072
   kcp:
     mode: "fast"
     block: "aes"
     key: "${KEY}"
-    rcvwnd: 512
-    sndwnd: 512
-    smuxbuf: 1048576
-    streambuf: 65536
+    rcvwnd: 2048
+    sndwnd: 2048
+    smuxbuf: 4194304
+    streambuf: 262144
 YAML
     else
         cat > "$CONFIG_FILE" <<YAML
@@ -409,14 +411,15 @@ server:
 transport:
   protocol: "kcp"
   conn: ${CONN}
+  tcpbuf: 131072
   kcp:
     mode: "fast"
     block: "aes"
     key: "${KEY}"
-    rcvwnd: 512
-    sndwnd: 512
-    smuxbuf: 1048576
-    streambuf: 65536
+    rcvwnd: 2048
+    sndwnd: 2048
+    smuxbuf: 4194304
+    streambuf: 262144
 YAML
     fi
 

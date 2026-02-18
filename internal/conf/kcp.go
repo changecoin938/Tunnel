@@ -40,10 +40,10 @@ func (k *KCP) setDefaults(role string) {
 	}
 
 	if k.Rcvwnd == 0 {
-		k.Rcvwnd = 512
+		k.Rcvwnd = 2048
 	}
 	if k.Sndwnd == 0 {
-		k.Sndwnd = 512
+		k.Sndwnd = 2048
 	}
 
 	// if k.Dshard == 0 {
@@ -58,10 +58,10 @@ func (k *KCP) setDefaults(role string) {
 	}
 
 	if k.Smuxbuf == 0 {
-		k.Smuxbuf = 1 * 1024 * 1024
+		k.Smuxbuf = 4 * 1024 * 1024
 	}
 	if k.Streambuf == 0 {
-		k.Streambuf = 64 * 1024
+		k.Streambuf = 256 * 1024
 	}
 }
 

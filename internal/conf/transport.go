@@ -16,17 +16,18 @@ type Transport struct {
 
 func (t *Transport) setDefaults(role string) {
 	if t.Conn == 0 {
-		t.Conn = runtime.NumCPU()
-		if t.Conn < 2 {
-			t.Conn = 2
+		n := runtime.NumCPU() * 2
+		if n < 2 {
+			n = 2
 		}
-		if t.Conn > 16 {
-			t.Conn = 16
+		if n > 16 {
+			n = 16
 		}
+		t.Conn = n
 	}
 
 	if t.TCPBuf == 0 {
-		t.TCPBuf = 8 * 1024
+		t.TCPBuf = 128 * 1024
 	}
 	if t.TCPBuf < 4*1024 {
 		t.TCPBuf = 4 * 1024

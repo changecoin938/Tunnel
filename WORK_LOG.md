@@ -54,3 +54,19 @@ This file is updated after each push/release.
 - Client config generation in `install.sh` switched from SOCKS5 to 7-port TCP forward mapping (443/8080/8880/2053/2083/2087/2096).
 - Server summary output now prints full client→server port mapping table and Xray local listen reminder (`127.0.0.1:2443-2449`).
 - Added new Persian documentation file `README.fa.md` with install guide, port mapping, architecture overview, and common commands.
+
+### Release v1.0.26
+- Increased transport defaults for gRPC-heavy deployments:
+  - `transport.conn`: `NumCPU()*2` (clamped `2..16`) in `internal/conf/transport.go`.
+  - `transport.tcpbuf`: default raised from `8KB` to `128KB` in `internal/conf/transport.go`.
+- Increased KCP defaults for higher aggregate throughput in `internal/conf/kcp.go`:
+  - `rcvwnd/sndwnd`: `2048/2048` (was `512/512`).
+  - `smuxbuf`: `4MB` (was `1MB`).
+  - `streambuf`: `256KB` (was `64KB`).
+- Updated installer-generated configs in `install.sh` (both server and client):
+  - Added explicit `transport.tcpbuf: 131072`.
+  - Updated generated `kcp` values to `rcvwnd/sndwnd=2048`, `smuxbuf=4194304`, `streambuf=262144`.
+  - Updated generated `conn` logic to `CPU*2` (clamped `2..16`) for parity with code defaults.
+- Validation:
+  - `go build ./...` passed.
+  - `go vet ./...` passed.
