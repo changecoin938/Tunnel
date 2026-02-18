@@ -84,3 +84,26 @@ This file is updated after each push/release.
 - Validation:
   - `go build ./...` passed.
   - `go vet ./...` passed.
+
+### Release v1.0.28
+- Added configurable PCAP options in `internal/conf/pcap.go`:
+  - `snaplen`, `promisc`, `immediate`, `timeout_ms` (with defaults and validation).
+- Updated `internal/socket/handle.go` to use PCAP settings from config instead of hardcoded values.
+  - Default promiscuous mode is now `false` unless explicitly enabled.
+- Added optional `pprof` listen address to config in `internal/conf/conf.go`.
+- Added pprof server bootstrap in `cmd/run/run.go` using `net/http/pprof` when `pprof` is set.
+- Added KCP limit fields in `internal/conf/kcp.go`:
+  - `max_sessions` (default `128`)
+  - `max_streams_per_session` (default `4096`)
+  - with validation ranges.
+- Enforced limits in server runtime:
+  - Session cap in `internal/server/server.go`.
+  - Per-session stream cap in `internal/server/handle.go`.
+- Updated installer-generated configs in `install.sh`:
+  - Server now includes `pprof: "127.0.0.1:6060"`.
+  - Server/client now include full `pcap` tuning block (`sockbuf/snaplen/promisc/immediate/timeout_ms`).
+  - Server now writes `max_sessions` and `max_streams_per_session`.
+  - Client now writes `max_streams_per_session`.
+- Validation:
+  - `go build ./...` passed.
+  - `go vet ./...` passed.

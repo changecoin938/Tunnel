@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"paqet/internal/conf"
@@ -19,6 +20,8 @@ type Server struct {
 	cfg   *conf.Conf
 	pConn *socket.PacketConn
 	wg    sync.WaitGroup
+
+	activeSessions atomic.Int64
 }
 
 func New(cfg *conf.Conf) (*Server, error) {
@@ -78,9 +81,16 @@ func (s *Server) listen(ctx context.Context, listener tnet.Listener) {
 			flog.Errorf("failed to accept connection: %v", err)
 			continue
 		}
+		if max := int64(s.cfg.Transport.KCP.MaxSessions); max > 0 && s.activeSessions.Load() >= max {
+			flog.Warnf("rejecting connection from %s: max_sessions limit reached (%d)", conn.RemoteAddr(), max)
+			conn.Close()
+			continue
+		}
+		s.activeSessions.Add(1)
 		flog.Infof("accepted new connection from %s (local: %s)", conn.RemoteAddr(), conn.LocalAddr())
 
 		s.wg.Go(func() {
+			defer s.activeSessions.Add(-1)
 			defer conn.Close()
 			s.handleConn(ctx, conn)
 		})

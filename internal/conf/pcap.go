@@ -6,7 +6,11 @@ import (
 )
 
 type PCAP struct {
-	Sockbuf int `yaml:"sockbuf"`
+	Sockbuf   int   `yaml:"sockbuf"`
+	Snaplen   int   `yaml:"snaplen"`
+	Promisc   *bool `yaml:"promisc"`
+	Immediate *bool `yaml:"immediate"`
+	TimeoutMs int   `yaml:"timeout_ms"`
 }
 
 func (p *PCAP) setDefaults(role string) {
@@ -16,6 +20,17 @@ func (p *PCAP) setDefaults(role string) {
 		} else {
 			p.Sockbuf = 4 * 1024 * 1024
 		}
+	}
+	if p.Snaplen == 0 {
+		p.Snaplen = 65535
+	}
+	if p.Promisc == nil {
+		v := false
+		p.Promisc = &v
+	}
+	if p.Immediate == nil {
+		v := true
+		p.Immediate = &v
 	}
 }
 
@@ -28,6 +43,12 @@ func (p *PCAP) validate() []error {
 
 	if p.Sockbuf > 256*1024*1024 {
 		errors = append(errors, fmt.Errorf("PCAP sockbuf too large (max 256MB)"))
+	}
+	if p.Snaplen < 64 || p.Snaplen > 65535 {
+		errors = append(errors, fmt.Errorf("PCAP snaplen must be between 64-65535"))
+	}
+	if p.TimeoutMs < 0 || p.TimeoutMs > 60000 {
+		errors = append(errors, fmt.Errorf("PCAP timeout_ms must be between 0-60000"))
 	}
 
 	// Should be power of 2 for optimal performance, but not required

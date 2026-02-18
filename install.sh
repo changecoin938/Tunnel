@@ -330,6 +330,8 @@ role: "server"
 log:
   level: "info"
 
+pprof: "127.0.0.1:6060"
+
 listen:
   addr: ":${PORT}"
 
@@ -340,6 +342,10 @@ network:
     router_mac: "${ROUTER_MAC}"
   pcap:
     sockbuf: 67108864
+    snaplen: 65535
+    promisc: false
+    immediate: true
+    timeout_ms: 0
 
 transport:
   protocol: "kcp"
@@ -354,6 +360,8 @@ transport:
     sndwnd: 4096
     smuxbuf: 4194304
     streambuf: 262144
+    max_sessions: 128
+    max_streams_per_session: 4096
 YAML
     else
         cat > "$CONFIG_FILE" <<YAML
@@ -392,6 +400,10 @@ network:
     router_mac: "${ROUTER_MAC}"
   pcap:
     sockbuf: 8388608
+    snaplen: 65535
+    promisc: false
+    immediate: true
+    timeout_ms: 0
 
 server:
   addr: "${SERVER_IP}:${PORT}"
@@ -409,6 +421,7 @@ transport:
     sndwnd: 4096
     smuxbuf: 4194304
     streambuf: 262144
+    max_streams_per_session: 4096
 YAML
     fi
 

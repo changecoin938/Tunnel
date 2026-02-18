@@ -13,6 +13,7 @@ import (
 type Conf struct {
 	Role      string    `yaml:"role"`
 	Log       Log       `yaml:"log"`
+	Pprof     string    `yaml:"pprof"`
 	Listen    Server    `yaml:"listen"`
 	SOCKS5    []SOCKS5  `yaml:"socks5"`
 	Forward   []Forward `yaml:"forward"`

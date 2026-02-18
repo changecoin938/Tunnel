@@ -28,6 +28,9 @@ type KCP struct {
 	Smuxbuf   int `yaml:"smuxbuf"`
 	Streambuf int `yaml:"streambuf"`
 
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxStreamsPerSession int `yaml:"max_streams_per_session"`
+
 	Block kcp.BlockCrypt `yaml:"-"`
 }
 
@@ -62,6 +65,12 @@ func (k *KCP) setDefaults(role string) {
 	}
 	if k.Streambuf == 0 {
 		k.Streambuf = 256 * 1024
+	}
+	if k.MaxSessions == 0 {
+		k.MaxSessions = 128
+	}
+	if k.MaxStreamsPerSession == 0 {
+		k.MaxStreamsPerSession = 4096
 	}
 }
 
@@ -102,6 +111,12 @@ func (k *KCP) validate() []error {
 	}
 	if k.Streambuf < 1024 {
 		errors = append(errors, fmt.Errorf("KCP streambuf must be >= 1024 bytes"))
+	}
+	if k.MaxSessions < 1 || k.MaxSessions > 65535 {
+		errors = append(errors, fmt.Errorf("KCP max_sessions must be between 1-65535"))
+	}
+	if k.MaxStreamsPerSession < 1 || k.MaxStreamsPerSession > 65535 {
+		errors = append(errors, fmt.Errorf("KCP max_streams_per_session must be between 1-65535"))
 	}
 
 	return errors

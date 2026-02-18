@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"paqet/internal/flog"
 	"paqet/internal/protocol"
@@ -10,6 +11,7 @@ import (
 )
 
 func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
+	var activeStreams atomic.Int64
 	for {
 		select {
 		case <-ctx.Done():
@@ -22,7 +24,14 @@ func (s *Server) handleConn(ctx context.Context, conn tnet.Conn) {
 			flog.Errorf("failed to accept stream on %s: %v", conn.RemoteAddr(), err)
 			return
 		}
+		if max := int64(s.cfg.Transport.KCP.MaxStreamsPerSession); max > 0 && activeStreams.Load() >= max {
+			flog.Warnf("rejecting stream %d on %s: max_streams_per_session limit reached (%d)", strm.SID(), conn.RemoteAddr(), max)
+			strm.Close()
+			continue
+		}
+		activeStreams.Add(1)
 		s.wg.Go(func() {
+			defer activeStreams.Add(-1)
 			defer strm.Close()
 			if err := s.handleStrm(ctx, strm); err != nil {
 				flog.Errorf("stream %d from %s closed with error: %v", strm.SID(), strm.RemoteAddr(), err)

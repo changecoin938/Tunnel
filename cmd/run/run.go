@@ -2,11 +2,13 @@ package run
 
 import (
 	"log"
+	"net/http"
 	"paqet/internal/conf"
 	"paqet/internal/flog"
 	"paqet/internal/pkg/buffer"
 
 	"github.com/spf13/cobra"
+	_ "net/http/pprof"
 )
 
 var confPath string
@@ -42,4 +44,12 @@ var Cmd = &cobra.Command{
 func initialize(cfg *conf.Conf) {
 	flog.SetLevel(cfg.Log.Level)
 	buffer.Initialize(cfg.Transport.TCPBuf, cfg.Transport.UDPBuf)
+	if cfg.Pprof != "" {
+		go func(addr string) {
+			flog.Infof("pprof server listening on %s", addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				flog.Errorf("pprof server stopped on %s: %v", addr, err)
+			}
+		}(cfg.Pprof)
+	}
 }
