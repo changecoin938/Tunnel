@@ -180,20 +180,7 @@ install_deps() {
     echo -e "${GREEN}Dependencies installed${NC}"
 }
 
-calc_conn() {
-    local n
-    n=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
-    n=$((n * 2))
-    if [[ -z "$n" || "$n" -lt 2 ]]; then
-        n=2
-    fi
-    if [[ "$n" -gt 16 ]]; then
-        n=16
-    fi
-    echo "$n"
-}
-
-CONN=$(calc_conn)
+CONN=10
 
 download_binary() {
     echo -e "${CYAN}Downloading paqet binary...${NC}"
@@ -341,7 +328,7 @@ generate_config() {
 role: "server"
 
 log:
-  level: "${LOG_LEVEL}"
+  level: "info"
 
 listen:
   addr: ":${PORT}"
@@ -359,11 +346,12 @@ transport:
   conn: ${CONN}
   tcpbuf: 131072
   kcp:
-    mode: "fast"
+    mode: "fast3"
     block: "aes"
     key: "${KEY}"
-    rcvwnd: 2048
-    sndwnd: 2048
+    mtu: 1350
+    rcvwnd: 4096
+    sndwnd: 4096
     smuxbuf: 4194304
     streambuf: 262144
 YAML
@@ -372,7 +360,7 @@ YAML
 role: "client"
 
 log:
-  level: "${LOG_LEVEL}"
+  level: "info"
 
 forward:
   - listen: "0.0.0.0:443"
@@ -403,7 +391,7 @@ network:
     addr: "${LOCAL_IP}:0"
     router_mac: "${ROUTER_MAC}"
   pcap:
-    sockbuf: 4194304
+    sockbuf: 8388608
 
 server:
   addr: "${SERVER_IP}:${PORT}"
@@ -413,11 +401,12 @@ transport:
   conn: ${CONN}
   tcpbuf: 131072
   kcp:
-    mode: "fast"
+    mode: "fast3"
     block: "aes"
     key: "${KEY}"
-    rcvwnd: 2048
-    sndwnd: 2048
+    mtu: 1350
+    rcvwnd: 4096
+    sndwnd: 4096
     smuxbuf: 4194304
     streambuf: 262144
 YAML

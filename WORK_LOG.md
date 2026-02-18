@@ -70,3 +70,17 @@ This file is updated after each push/release.
 - Validation:
   - `go build ./...` passed.
   - `go vet ./...` passed.
+
+### Release v1.0.27
+- Updated `install.sh` to use fixed, production-tested tunnel values for server/client generated configs:
+  - `conn: 10` (removed dynamic `calc_conn` path, now hardcoded for stable parallelism).
+  - `mode: fast3`, `mtu: 1350`.
+  - `rcvwnd/sndwnd: 4096/4096`.
+  - `smuxbuf: 4194304`, `streambuf: 262144`.
+  - `tcpbuf: 131072`.
+- Server generated config keeps `pcap.sockbuf: 67108864` (64MB).
+- Client generated config changed `pcap.sockbuf` from `4194304` to `8388608` (8MB).
+- Installer-generated `log.level` is now explicit `"info"` for both roles.
+- Validation:
+  - `go build ./...` passed.
+  - `go vet ./...` passed.
